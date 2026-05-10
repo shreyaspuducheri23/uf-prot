@@ -11,3 +11,6 @@ build/
 .claude/
 data/
 processed_data/
+
+logs/
+tools/
