@@ -1,4 +1,4 @@
-"""Black-box CLI simulation test without monkeypatching pipeline functions."""
+"""Black-box CLI wiring test using a fake PLINK binary."""
 import json
 import os
 import subprocess
@@ -167,7 +167,8 @@ def _run_blackbox(tmp_path: Path, clump_p1: float) -> int:
     return len(inst_df)
 
 
-def test_blackbox_cli_respects_clump_p1_from_config(tmp_path):
+def test_fake_plink_blackbox_cli_respects_clump_p1_config_wiring_only(tmp_path):
+    """This test validates config plumbing into clump CLI, not real PLINK LD semantics."""
     strict_n = _run_blackbox(tmp_path, clump_p1=1e-10)
     relaxed_n = _run_blackbox(tmp_path, clump_p1=1e-8)
     assert strict_n == 1

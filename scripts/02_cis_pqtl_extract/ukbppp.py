@@ -13,6 +13,7 @@ import argparse
 import logging
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 
@@ -93,6 +94,54 @@ def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[Prote
     return proteins, entity_map
 
 
+def normalize_ukbppp_rows(rows: list[dict]) -> pd.DataFrame | None:
+    """Normalize streamed UKB-PPP rows into the shared extraction schema."""
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return None
+    df = df.rename(
+        columns={
+            "ALLELE1": "EA",
+            "ALLELE0": "OA",
+            "A1FREQ": "EAF",
+            "BETA": "beta",
+            "SE": "se",
+        }
+    )
+    id_parts = df["ID"].str.split(":", expand=True)
+    df["chrom"] = id_parts[0].str.replace(r"^chr", "", regex=True)
+    df["pos"] = pd.to_numeric(id_parts[1], errors="coerce").astype("Int64")
+    df["pval"] = 10 ** (-pd.to_numeric(df["LOG10P"], errors="coerce"))
+    df["rsid"] = "."
+    if "N" in df.columns:
+        df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(UKB_N).astype(int)
+    else:
+        df["N"] = UKB_N
+    return df
+
+
+def build_read_fn(
+    entity_map: dict[str, str],
+    window_kb: int,
+    stream_fn: Callable[[str, str, int, int, Path], list[dict]] = stream_ukbppp_protein,
+) -> Callable[[ProteinMeta], pd.DataFrame | None]:
+    """Construct the per-protein reader used by the cohort-agnostic extraction loop."""
+    from scripts.lib.cis import cis_window_bounds
+
+    def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
+        start, end = cis_window_bounds(protein.tss, kb=window_kb)
+        eid = entity_map.get(protein.seqid)
+        if not eid:
+            return None
+        with tempfile.TemporaryDirectory(prefix=f"ukb_{protein.seqid}_") as tmp:
+            rows = stream_fn(eid, protein.chrom, start, end, Path(tmp))
+        return normalize_ukbppp_rows(rows)
+
+    return read_fn
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract UKB-PPP cis-pQTLs")
     parser.add_argument("--workers", type=int, default=1)
@@ -113,33 +162,7 @@ def main() -> None:
         # via the ±500kb window; the stream function accepts a position set.
         # For UKB-PPP we pre-build per-protein cis windows here.
 
-        from scripts.lib.cis import cis_window_bounds
-        from scripts.lib.filters import exclude_mhc
-
-        def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
-            start, end = cis_window_bounds(protein.tss, kb=window_kb)
-            eid = entity_map.get(protein.seqid)
-            if not eid:
-                return None
-            with tempfile.TemporaryDirectory(prefix=f"ukb_{protein.seqid}_") as tmp:
-                rows = stream_ukbppp_protein(eid, protein.chrom, start, end, Path(tmp))
-            if not rows:
-                return None
-            df = pd.DataFrame(rows)
-            df = df.rename(columns={
-                "ALLELE1": "EA", "ALLELE0": "OA",
-                "A1FREQ": "EAF", "BETA": "beta", "SE": "se",
-            })
-            id_parts = df["ID"].str.split(":", expand=True)
-            df["chrom"] = id_parts[0].str.replace(r"^chr", "", regex=True)
-            df["pos"] = pd.to_numeric(id_parts[1], errors="coerce").astype("Int64")
-            df["pval"] = 10 ** (-pd.to_numeric(df["LOG10P"], errors="coerce"))
-            df["rsid"] = "."
-            if "N" in df.columns:
-                df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(UKB_N).astype(int)
-            else:
-                df["N"] = UKB_N
-            return df
+        read_fn = build_read_fn(entity_map=entity_map, window_kb=window_kb)
 
         n = run_extraction(COHORT, proteins[:args.limit] if args.limit else proteins,
                            read_fn, workers=args.workers, cfg=cis_cfg)

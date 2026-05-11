@@ -59,13 +59,17 @@ def run_extraction(
              f"({cp.n_done} already done)")
 
     if workers > 1:
-        return _run_parallel(cohort, todo, read_fn, out_dir, cp, workers, cfg)
-    return _run_sequential(cohort, todo, read_fn, out_dir, cp, proteins, cfg)
+        n_ok = _run_parallel(cohort, todo, read_fn, out_dir, cp, workers, cfg)
+    else:
+        n_ok = _run_sequential(cohort, todo, read_fn, out_dir, cp, cfg)
+
+    # Keep protein_index.tsv in sync for both sequential and parallel paths.
+    _write_index(cohort, proteins)
+    return n_ok
 
 
 def _run_sequential(cohort: str, todo: list[ProteinMeta],
                     read_fn: Callable, out_dir: Path, cp: Checkpoint,
-                    all_proteins: list[ProteinMeta],
                     cfg: dict | None = None) -> int:
     n_ok = 0
     n_empty = 0
@@ -101,7 +105,6 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
         n_ok += 1
 
     log.info(f"{cohort}: done. {n_ok} proteins with cis-pQTLs, {n_empty} empty after filters.")
-    _write_index(cohort, all_proteins)
     return n_ok
 
 

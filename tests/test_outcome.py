@@ -1,6 +1,7 @@
 """Tests for code.lib.outcome — requires Kim GWAS tabix index."""
 import pytest
 import pandas as pd
+import pysam
 
 from scripts.lib.paths import KIM_GWAS
 
@@ -18,20 +19,34 @@ class TestOutcomeLookup:
         with OutcomeLookup() as lkp:
             yield lkp
 
-    def test_fetch_region_returns_dataframe(self, lookup):
-        df = lookup.fetch_region("1", 1_000_000, 1_100_000)
+    @pytest.fixture(scope="class")
+    def seeded_locus(self):
+        tbx = pysam.TabixFile(str(KIM_GWAS))
+        try:
+            first = next(tbx.fetch())
+        except StopIteration:
+            pytest.fail("Kim GWAS tabix is empty")
+        finally:
+            tbx.close()
+
+        parts = first.split("\t")
+        if len(parts) < 2:
+            pytest.fail("Unexpected Kim GWAS row shape")
+        return str(parts[0]), int(parts[1])
+
+    def test_fetch_region_seeded_locus_has_strict_invariants(self, lookup, seeded_locus):
+        chrom, pos = seeded_locus
+        df = lookup.fetch_region(chrom, pos, pos)
+
         assert isinstance(df, pd.DataFrame)
-
-    def test_fetch_region_columns(self, lookup):
-        df = lookup.fetch_region("1", 1_000_000, 1_100_000)
-        assert "effect_allele" in df.columns
-        assert "beta" in df.columns
-        assert "N" in df.columns
-
-    def test_n_constant(self, lookup):
-        df = lookup.fetch_region("1", 1_000_000, 1_100_000)
-        if not df.empty:
-            assert all(df["N"] == KIM_N)
+        assert not df.empty
+        required = {"chromosome", "base_pair_location", "effect_allele", "beta", "N"}
+        assert required.issubset(df.columns)
+        assert (df["chromosome"].astype(str) == chrom).all()
+        assert df["base_pair_location"].between(pos, pos).all()
+        assert (df["N"] == KIM_N).all()
+        assert pd.api.types.is_numeric_dtype(df["beta"])
+        assert pd.api.types.is_numeric_dtype(df["p_value"])
 
     def test_nonexistent_region_returns_empty(self, lookup):
         df = lookup.fetch_region("999", 1, 100)
@@ -40,7 +55,7 @@ class TestOutcomeLookup:
     def test_fetch_region_positions_in_range(self, lookup):
         start, end = 1_000_000, 1_010_000
         df = lookup.fetch_region("1", start, end)
-        if not df.empty:
+        if not df.empty:  # smoke check for an arbitrary region
             assert all(df["base_pair_location"].between(start, end))
 
 

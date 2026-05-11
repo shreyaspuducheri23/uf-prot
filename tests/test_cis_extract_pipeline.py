@@ -183,3 +183,35 @@ class TestRunExtraction:
                 run_extraction(cohort, [sample_protein], make_read_fn(), workers=workers)
             files = list(out_dir.glob("*.tsv"))
             assert len(files) == 1, f"workers={workers}: expected 1 output file"
+
+    def test_parallel_writes_protein_index(self, tmp_path, sample_protein):
+        cohort = "ARIC_EA"
+        out_dir = tmp_path / "cis_sumstats"
+        state_dir = tmp_path / "processed_data" / cohort
+        out_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        def read_fn(_p):
+            return pd.DataFrame({
+                "chrom": ["22"],
+                "pos": [25_212_564],
+                "rsid": ["rs123"],
+                "EA": ["A"],
+                "OA": ["G"],
+                "EAF": [0.3],
+                "beta": [0.5],
+                "se": [0.05],
+                "pval": [1e-9],
+                "N": [7213],
+            })
+
+        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            run_extraction(cohort, [sample_protein], read_fn, workers=2)
+
+        index_path = state_dir / "protein_index.tsv"
+        assert index_path.exists()
+        index_df = pd.read_csv(index_path, sep="\t")
+        assert list(index_df.columns) == ["seqid", "gene", "uniprot", "chrom", "tss", "build"]
+        assert len(index_df) == 1
+        assert index_df.loc[0, "seqid"] == sample_protein.seqid

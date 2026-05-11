@@ -318,7 +318,55 @@ class TestCallHarmoniseR:
         assert not out.empty
 
 
+class TestRestoreMetadata:
+    def test_restores_seqid_gene_uniprot_from_source_by_snp_key(self):
+        harmonised = pd.DataFrame(
+            {
+                "SNP": ["rs1", "rs2"],
+                "beta.exposure": [0.1, 0.2],
+                "beta.outcome": [0.05, 0.08],
+            }
+        )
+        source = pd.DataFrame(
+            {
+                "seqid": ["SeqId_TEST", "SeqId_TEST"],
+                "rsid": ["rs1", "rs2"],
+                "gene": ["GENE1", "GENE1"],
+                "uniprot": ["P00001", "P00001"],
+                "beta": [0.1, 0.2],
+                "se": [0.01, 0.01],
+            }
+        )
+
+        out = _harmonise_mod._restore_metadata(harmonised, source, seqid="SeqId_TEST")
+
+        assert "seqid" in out.columns
+        assert "gene" in out.columns
+        assert "uniprot" in out.columns
+        assert set(out["seqid"]) == {"SeqId_TEST"}
+        assert set(out["gene"]) == {"GENE1"}
+        assert set(out["uniprot"]) == {"P00001"}
+
+    def test_restores_from_fallback_when_no_snp_key_present(self):
+        harmonised = pd.DataFrame({"some_col": [1]})
+        source = pd.DataFrame(
+            {
+                "seqid": ["SeqId_TEST"],
+                "rsid": ["rs1"],
+                "gene": ["GENE1"],
+                "uniprot": ["P00001"],
+            }
+        )
+
+        out = _harmonise_mod._restore_metadata(harmonised, source, seqid="SeqId_TEST")
+
+        assert out["seqid"].iloc[0] == "SeqId_TEST"
+        assert out["gene"].iloc[0] == "GENE1"
+        assert out["uniprot"].iloc[0] == "P00001"
+
+
 def test_harmonise_cohort_proxy_path_blackbox_real_plink(tmp_path):
+    """Real-PLINK semantic coverage complementing fake-PLINK wiring tests."""
     seqid = "SeqId_TEST"
     cohort = "ARIC_EA"
     plink_mod = importlib.import_module("scripts.lib.plink")
