@@ -6,14 +6,16 @@ Extract cis-pQTLs from deCODE per-aptamer .txt.gz files via S3 streaming.
 Files are streamed from s3-ext.decode.is:10443 with early abort once the
 cis window on the target chromosome is passed — avoiding ~99% of bytes.
 
+EAF comes directly from the ImpMAF column in each per-protein file.
+The 2023 deCODE S3 files consistently encode effectAllele as the minor allele,
+so ImpMAF == EAF exactly (confirmed empirically: ImpMAF never exceeds 0.5).
+
 Supports threaded extraction workers; tune with --workers.
-Caches EAF from assocvariants.annotated.txt.gz on first run.
 
 Usage:
   python scripts/02_cis_pqtl_extract/decode.py [--normalization raw|smp] [--limit N] [--workers N]
 """
 import argparse
-import gzip
 import json
 import re
 import logging
@@ -24,7 +26,7 @@ from scripts.lib.cis import tss_from_ensembl
 from scripts.lib.config import add_config_arg, load_config, get_section
 from scripts.lib.decode_stream import _get_s3_client, stream_s3_cis_rows, parse_bulk_urls
 from scripts.lib.logging import setup_logger, RunManifest
-from scripts.lib.paths import DECODE_ANNOTATED, DECODE_URLS, cohort_dir
+from scripts.lib.paths import DECODE_URLS, cohort_dir
 from scripts.lib.progress import bar
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import run_extraction
@@ -35,6 +37,7 @@ BUILD = "hg38"
 _DEFAULT_N = 35_000
 _REQUIRED_COLS = {
     "Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE", "N",
+    "ImpMAF",
 }
 _FAST_PARSER_COLS = frozenset(_REQUIRED_COLS)
 _prefilter_window_bp = 500_000
@@ -64,35 +67,6 @@ COHORT = "deCODE"
 # Populated at startup by _build_s3_key_index; maps core_name → full S3 key
 _s3_key_map: dict[str, str] = {}
 
-
-def load_eaf_dict() -> dict[str, float]:
-    """Load EAF for all deCODE variants from the annotation file."""
-    eaf_cache = cohort_dir(COHORT) / "_eaf_cache.pkl"
-    if eaf_cache.exists():
-        import pickle
-        with open(eaf_cache, "rb") as fh:
-            return pickle.load(fh)
-
-    log.info(f"Loading EAF from {DECODE_ANNOTATED}...")
-    eaf: dict[str, float] = {}
-    with gzip.open(DECODE_ANNOTATED, "rt") as fh:
-        header = fh.readline().strip().split("\t")
-        name_i = header.index("Name")
-        eaf_i = header.index("effectAlleleFreq")
-        for line in bar(fh, desc="EAF load", total=None):
-            parts = line.strip().split("\t")
-            if len(parts) > eaf_i:
-                try:
-                    eaf[parts[name_i]] = float(parts[eaf_i])
-                except ValueError:
-                    pass
-
-    import pickle
-    eaf_cache.parent.mkdir(parents=True, exist_ok=True)
-    with open(eaf_cache, "wb") as fh:
-        pickle.dump(eaf, fh)
-    log.info(f"Loaded EAF for {len(eaf):,} variants → cached at {eaf_cache}")
-    return eaf
 
 
 def _build_s3_key_index(prefix: str, pattern: str) -> dict[str, str]:
@@ -202,7 +176,7 @@ def _load_decode_raw_df(protein: ProteinMeta) -> pd.DataFrame | None:
     return pd.DataFrame(rows)
 
 
-def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.DataFrame | None:
+def read_decode_protein(protein: ProteinMeta) -> pd.DataFrame | None:
     df = _load_decode_raw_df(protein)
     if df is None:
         return None
@@ -218,12 +192,14 @@ def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.
         "SE": "se",
         "N": "N",
         "Name": "variant_name",
+        "ImpMAF": "EAF",
     })
     df["chrom"] = df["chrom"].astype(str).str.lstrip("chr")
     df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
     df["beta"] = pd.to_numeric(df["beta"], errors="coerce")
     df["se"] = pd.to_numeric(df["se"], errors="coerce")
     df["pval"] = pd.to_numeric(df["pval"], errors="coerce")
+    df["EAF"] = pd.to_numeric(df["EAF"], errors="coerce")
 
     in_cis = df["chrom"].eq(str(protein.chrom)) & (df["pos"] - protein.tss).abs().le(_prefilter_window_bp)
     gw_sig = df["pval"] < _prefilter_pval
@@ -236,20 +212,10 @@ def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.
     else:
         df["N"] = _DEFAULT_N
 
-    n_in = len(df)
-    df["EAF"] = df["variant_name"].map(eaf_dict)
     df = df.dropna(subset=["EAF", "pos", "pval", "beta", "se"])
     if df.empty:
         return None
     df["pos"] = df["pos"].astype(int)
-    n_missing_eaf = n_in - len(df)
-    if n_missing_eaf:
-        pct = 100 * n_missing_eaf / n_in if n_in else 0
-        log.info(
-            f"{protein.seqid}: EAF lookup — {n_missing_eaf}/{n_in} ({pct:.1f}%) "
-            f"variants dropped (not in EAF cache)"
-        )
-
     return df
 
 
@@ -278,13 +244,12 @@ def main() -> None:
         _s3_key_map = _build_s3_key_index(norm_cfg["prefix"], norm_cfg["pattern"])
 
         urls = parse_bulk_urls(DECODE_URLS)
-        eaf_dict = load_eaf_dict()
         proteins = build_protein_list(urls)
 
         log.info(f"{COHORT}: {len(proteins)} proteins")
 
         def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
-            return read_decode_protein(protein, eaf_dict)
+            return read_decode_protein(protein)
 
         n = run_extraction(
             COHORT,

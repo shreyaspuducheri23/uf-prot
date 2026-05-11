@@ -16,7 +16,7 @@ _decode_mod = importlib.import_module("scripts.02_cis_pqtl_extract.decode")
 read_decode_protein = _decode_mod.read_decode_protein
 
 # Columns the rename dict in read_decode_protein maps FROM (must exist in real files).
-_EXPECTED_SOURCE_COLS = {"Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE"}
+_EXPECTED_SOURCE_COLS = {"Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE", "ImpMAF"}
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def sample_protein():
     )
 
 
-def _fake_df(n: int = 3) -> pd.DataFrame:
+def _fake_df(n: int = 3, impmaf: str = "0.12") -> pd.DataFrame:
     rows = [
         {
             "Chrom": "chr22",
@@ -42,97 +42,72 @@ def _fake_df(n: int = 3) -> pd.DataFrame:
             "Pval": "1e-9",
             "SE": "0.01",
             "N": "35000",
+            "ImpMAF": impmaf,
         }
         for i in range(n)
     ]
     return pd.DataFrame(rows)
 
 
-def _fake_rows(n: int = 3) -> list[dict]:
-    return _fake_df(n).to_dict("records")
-
-
 class TestReadDecodeProtein:
-    def test_returns_dataframe_with_expected_cols(self, sample_protein):
-        df = _fake_df(3)
-        eaf_dict = {f"22:25212564+{i}:A:G": 0.30 for i in range(3)}
-
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
+    def _call(self, protein, df):
+        with patch.object(_decode_mod, "_s3_key_map", {protein.seqid: "fake/key"}), \
              patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
-            result = read_decode_protein(sample_protein, eaf_dict)
+            return read_decode_protein(protein)
 
+    def test_returns_dataframe_with_expected_cols(self, sample_protein):
+        result = self._call(sample_protein, _fake_df(3))
         assert result is not None
         for col in ("chrom", "pos", "EA", "OA", "EAF", "beta", "se", "pval", "N", "rsid"):
             assert col in result.columns, f"missing column: {col}"
 
-    def test_chrom_has_no_chr_prefix(self, sample_protein):
-        df = _fake_df(1)
-        eaf_dict = {"22:25212564+0:A:G": 0.30}
-
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
-             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
-            result = read_decode_protein(sample_protein, eaf_dict)
-
-        assert not result["chrom"].str.startswith("chr").any()
-
-    def test_missing_eaf_rows_dropped_and_logged(self, sample_protein, caplog):
-        df = _fake_df(3)
-        eaf_dict = {}
-
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
-             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df), \
-             caplog.at_level("INFO", logger="02_decode"):
-            result = read_decode_protein(sample_protein, eaf_dict)
-
-        assert result is None or (result is not None and len(result) == 0)
-        assert "EAF lookup" in caplog.text or result is None
-
-    def test_partial_eaf_cache_some_rows_kept(self, sample_protein):
-        df = _fake_df(3)
-        eaf_dict = {"22:25212564+0:A:G": 0.30}
-
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
-             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
-            result = read_decode_protein(sample_protein, eaf_dict)
-
+    def test_eaf_comes_from_impmaf(self, sample_protein):
+        result = self._call(sample_protein, _fake_df(1, impmaf="0.23"))
         assert result is not None
-        assert len(result) == 1
+        assert abs(result["EAF"].iloc[0] - 0.23) < 1e-9
+
+    def test_eaf_is_numeric(self, sample_protein):
+        result = self._call(sample_protein, _fake_df(3))
+        assert result is not None
+        assert pd.api.types.is_float_dtype(result["EAF"])
+
+    def test_row_with_nan_impmaf_dropped(self, sample_protein):
+        df = _fake_df(3)
+        df.loc[1, "ImpMAF"] = None  # middle row has no ImpMAF
+        result = self._call(sample_protein, df)
+        assert result is not None
+        assert len(result) == 2
+
+    def test_all_nan_impmaf_returns_none(self, sample_protein):
+        df = _fake_df(3, impmaf="not_a_number")
+        result = self._call(sample_protein, df)
+        assert result is None
+
+    def test_chrom_has_no_chr_prefix(self, sample_protein):
+        result = self._call(sample_protein, _fake_df(1))
+        assert not result["chrom"].str.startswith("chr").any()
 
     def test_missing_key_in_s3_map_returns_none(self, sample_protein):
         with patch.object(_decode_mod, "_s3_key_map", {}):
-            result = read_decode_protein(sample_protein, {})
+            result = read_decode_protein(sample_protein)
         assert result is None
 
-    def test_empty_dataframe_returns_none(self, sample_protein):
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
+    def test_none_from_load_returns_none(self, sample_protein):
+        with patch.object(_decode_mod, "_s3_key_map", {sample_protein.seqid: "fake/key"}), \
              patch.object(_decode_mod, "_load_decode_raw_df", return_value=None):
-            result = read_decode_protein(sample_protein, {})
+            result = read_decode_protein(sample_protein)
         assert result is None
 
     def test_n_fills_with_default_when_column_missing(self, sample_protein):
-        rows = [
-            {
-                "Chrom": "chr22", "Pos": "25212564",
-                "Name": "22:25212564:A:G",
-                "rsids": "rs100",
-                "effectAllele": "A", "otherAllele": "G",
-                "Beta": "0.1", "Pval": "1e-9", "SE": "0.01",
-                # No "N" column
-            }
-        ]
-        df = pd.DataFrame(rows)
-        eaf_dict = {"22:25212564:A:G": 0.30}
-
-        with patch.object(_decode_mod, "_s3_key_map",
-                          {sample_protein.seqid: "fake/key"}), \
-             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
-            result = read_decode_protein(sample_protein, eaf_dict)
-
+        rows = [{
+            "Chrom": "chr22", "Pos": "25212564",
+            "Name": "22:25212564:A:G", "rsids": "rs100",
+            "effectAllele": "A", "otherAllele": "G",
+            "Beta": "0.1", "Pval": "1e-9", "SE": "0.01",
+            "ImpMAF": "0.15",
+            # No "N" column
+        }]
+        result = self._call(sample_protein, pd.DataFrame(rows))
         assert result is not None
         assert result["N"].iloc[0] == 35_000
 
