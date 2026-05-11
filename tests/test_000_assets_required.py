@@ -75,19 +75,15 @@ def test_required_executables_available() -> None:
         [
             "Rscript",
             "-e",
-            (
-                'quit(save="no", status=ifelse('
-                'requireNamespace("GWASBrewer", quietly=TRUE) || '
-                'requireNamespace("simGWAS", quietly=TRUE), 0, 42))'
-            ),
+            'quit(save="no", status=ifelse(requireNamespace("GWASBrewer", quietly=TRUE),0,42))',
         ],
         capture_output=True,
         text=True,
     )
     if gwas_backend_probe.returncode == 42:
-        pytest.fail("At least one of R packages GWASBrewer or simGWAS is required")
+        pytest.fail("R package GWASBrewer is required for oracle simulation tests")
     if gwas_backend_probe.returncode != 0:
-        pytest.fail("Failed while probing GWASBrewer/simGWAS availability via Rscript")
+        pytest.fail("Failed while probing GWASBrewer availability via Rscript")
 
 
 def test_repo_python_virtualenv_present() -> None:
