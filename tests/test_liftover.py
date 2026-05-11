@@ -6,10 +6,8 @@ from pathlib import Path
 from scripts.lib.paths import CHAIN_HG19_TO_HG38
 
 
-pytestmark = pytest.mark.skipif(
-    not CHAIN_HG19_TO_HG38.exists(),
-    reason="hg19ToHg38 chain file not downloaded (run 00_setup/install.sh first)",
-)
+if not CHAIN_HG19_TO_HG38.exists():
+    pytest.fail("hg19ToHg38 chain file not downloaded (run 00_setup/install.sh first)")
 
 
 from scripts.lib.liftover import lift_position, lift_table

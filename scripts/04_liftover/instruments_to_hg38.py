@@ -24,6 +24,7 @@ log = setup_logger("04_liftover")
 
 # Cohorts already in hg38 — pass through with chrom_hg38/pos_hg38 = chrom/pos
 HG38_COHORTS = {"deCODE"}
+LIFTED_REQUIRED_COLS = ["seqid", "chrom", "pos", "chrom_hg38", "pos_hg38"]
 
 
 def lift_cohort(cohort: str, limit: int | None = None) -> int:
@@ -46,7 +47,7 @@ def lift_cohort(cohort: str, limit: int | None = None) -> int:
         seqid = tsv_path.stem
         out_path = out_dir / f"{seqid}.tsv"
 
-        if output_exists(out_path):
+        if output_exists(out_path, required_cols=LIFTED_REQUIRED_COLS, min_rows=1):
             cp.mark_done(seqid)
             n_ok += 1
             continue

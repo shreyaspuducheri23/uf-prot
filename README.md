@@ -39,7 +39,7 @@ First, we want to restrict analyses to the european-ancestry. This is for maximi
 
 ### LD reference
 
-1000 Genomes EUR panel (502 samples, ≈9M variants, MAF > 0.01) at `data/ld_ref/` (symlink to MR_IA). PLINK1 binary format. Used for LD clumping and proxy SNP search. TODO: consider replacing with a UKB EUR subset (≈50k samples) for better LD estimates, particularly for uncommon variants — requires UKB data access to generate.
+1000 Genomes EUR panel (502 samples, ≈9M variants, MAF > 0.01) at `data/ld_ref/` (symlink to MR_IA). PLINK bed/bim/fam format, consumed via PLINK2. Used for LD clumping and proxy SNP search. TODO: consider replacing with a UKB EUR subset (≈50k samples) for better LD estimates, particularly for uncommon variants — requires UKB data access to generate.
 
 ### Synapse streaming
 
@@ -64,7 +64,7 @@ We estimated the effect of circulating plasma protein levels on meta-analyzed le
 For European analyses, we utilized proteomic GWAS summary data from ARIC, deCODE, Fenland, and UKB-PPP studies as exposures and assessed the effects of proteins in each cohort on European fibroid GWAS.  In this context, the term "protein" refers to the aptamer (SomaScan) or antibodies (Olink) targeting the respective protein.
 TODO: define the cohorts for other ancestries, where ARIC will play a special role due to african ancestry representation.
 
-Summary statistics from protein GWAS (exposures) and fibroid outcome GWAS were harmonized using the harmonise_data() function. When a selected instrument is unavailable in the outcome dataset, we conduct a proxy SNP search using ancestry-matched LD reference panels from the instrument selection procedure. Proxy variants are identified using PLINK v.1.9 with parameters --ld-window=5000, --ld-window-kb=5000, --ld-window-r2=0.8. We retain proxies with MAFs ≤ 0.42. Instrument strength is evaluated using F-statistics, with values above 10 considered indicative of robust instruments and lower likelihood of weak instrument bias.
+Summary statistics from protein GWAS (exposures) and fibroid outcome GWAS were harmonized using the harmonise_data() function. When a selected instrument is unavailable in the outcome dataset, we conduct a proxy SNP search using ancestry-matched LD reference panels from the instrument selection procedure. Proxy variants are identified using PLINK2 with parameters --ld-window-kb=5000 and --ld-window-r2=0.8. We retain proxies with MAFs ≤ 0.42. Instrument strength is evaluated using F-statistics, with values above 10 considered indicative of robust instruments and lower likelihood of weak instrument bias.
 
 Causal estimates were derived using the mr() function and represent the odds ratio per 1 standard deviation increase in genetically predicted protein level. For proteins with one instrument, we applied the Wald ratio; for those with two or more instruments, we used an inverse-variance weighted random-effects model. We controlled for multiple testing by using a Benjamini-Hochberg false discovery rate (FDR) threshold of 5%, consistent with prior studies. However, we performed the correction within each proteomics cohort and at the single-trait level. A protein reaching FDR < 0.05 in any single stratum is reported. Ensure MR analyses adhered to STROBE-MR reporting guidelines.
 
@@ -160,7 +160,7 @@ scripts/
     filters.py              # MAF, MHC exclusion, palindrome, GW significance
     cis.py                  # ±500 kb / ±1 Mb window bounds; TSS lookup (Ensembl REST)
     cis_extract.py          # cohort-agnostic extraction loop (shared by all 4 cohorts)
-    plink.py                # plink1.9 subprocess wrappers: clump, proxies, LD matrix
+    plink.py                # PLINK2 subprocess wrappers: clump, proxies, LD matrix
     liftover.py             # hg19 ↔ hg38 coordinate conversion (pyliftover)
     outcome.py              # Kim GWAS tabix lookup (OutcomeLookup class)
     synapse_stream.py       # tar/gz streaming helpers for UKB-PPP and Fenland

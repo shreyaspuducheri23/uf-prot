@@ -104,9 +104,44 @@ class Checkpoint:
         return len(self._failed)
 
 
-def output_exists(path: Path) -> bool:
-    """Simple file-existence check as an alternative to state ledger."""
-    return path.exists() and path.stat().st_size > 0
+def output_exists(
+    path: Path,
+    required_cols: Iterable[str] | None = None,
+    min_rows: int = 0,
+) -> bool:
+    """
+    Check whether a TSV-like output file exists and is minimally valid.
+
+    - If ``required_cols`` is provided, the header must contain all required columns.
+    - If ``min_rows`` > 0, the file must contain at least that many non-empty data rows.
+    """
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+
+    if required_cols is None and min_rows <= 0:
+        return True
+
+    required = list(required_cols or [])
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            header_line = fh.readline()
+            if not header_line:
+                return False
+            header = header_line.rstrip("\r\n").split("\t")
+            if required and any(col not in header for col in required):
+                return False
+            if min_rows <= 0:
+                return True
+
+            n_rows = 0
+            for line in fh:
+                if line.strip():
+                    n_rows += 1
+                    if n_rows >= min_rows:
+                        return True
+            return False
+    except OSError:
+        return False
 
 
 def _utc_now_iso() -> str:

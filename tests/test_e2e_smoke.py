@@ -1,226 +1,334 @@
-"""
-End-to-end smoke test: 2 synthetic proteins through extraction → clump → liftover → harmonise → assemble.
+"""Real end-to-end smoke test using actual pipeline CLIs and external tools.
 
-All external dependencies (PLINK, R, Synapse, tabix) are mocked.
-This test validates that the pipeline wiring is correct and produces
-a final results table with expected structure.
+This test intentionally avoids monkeypatching PLINK, liftover, outcome lookup,
+or R harmonisation. It builds a tiny synthetic ARIC input and Kim outcome file,
+then runs steps 02→05 as black-box commands.
 """
+
 import importlib
 import json
-import pandas as pd
-import numpy as np
-import pytest
+import os
+import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from scripts.lib.schema import ProteinMeta, NORM_COLS
-from scripts.lib.cis_extract import run_extraction
+import pandas as pd
+import pysam
+import pytest
+
 from scripts.lib.fdr import add_fdr
+from scripts.lib.schema import NORM_COLS
 
-# Import numbered-directory modules via importlib (identifiers can't start with digits)
-_clump_mod = importlib.import_module("scripts.03_clump.clump")
-_liftover_mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
-_harmonise_mod = importlib.import_module("scripts.05_harmonise.harmonise")
 _assemble_mod = importlib.import_module("scripts.09_assemble.assemble")
 
 
-# ─── Fixture proteins ────────────────────────────────────────────────────────
-
 PROTEINS = [
-    ProteinMeta(
-        seqid="SeqId_P1", gene="GENE1", uniprot="Q11111",
-        chrom="22", tss=25_212_564, build="hg19", source_cohort="ARIC_EA",
-    ),
-    ProteinMeta(
-        seqid="SeqId_P2", gene="GENE2", uniprot="Q22222",
-        chrom="1", tss=10_000_000, build="hg19", source_cohort="ARIC_EA",
-    ),
+    {
+        "seqid": "SeqId_P1",
+        "gene": "GENE1",
+        "uniprot": "Q11111",
+        "chrom": "2",
+        "tss": 136_608_646,
+    },
+    {
+        "seqid": "SeqId_P2",
+        "gene": "GENE2",
+        "uniprot": "Q22222",
+        "chrom": "13",
+        "tss": 32_914_437,
+    },
 ]
 
 
-def _good_cis_df(protein: ProteinMeta) -> pd.DataFrame:
-    """Minimal valid cis sumstats for one protein."""
-    tss = protein.tss
-    return pd.DataFrame({
-        "chrom": [protein.chrom],
-        "pos":   [tss],
-        "rsid":  ["rs12345"],
-        "EA":    ["A"],
-        "OA":    ["G"],
-        "EAF":   [0.30],
-        "beta":  [0.50],
-        "se":    [0.05],
-        "pval":  [1e-9],
-        "N":     [7213],
-    })
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
-# ─── Step 02: extraction ─────────────────────────────────────────────────────
+def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=cwd)
+    assert proc.returncode == 0, (
+        f"Command failed: {' '.join(cmd)}\n"
+        f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+    )
 
-@pytest.fixture
-def extracted_dir(tmp_path):
-    """Run extraction for both proteins, return the output directory."""
-    out_dir = tmp_path / "cis_sumstats"
-    out_dir.mkdir(parents=True)
 
-    with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
-         patch("scripts.lib.cis_extract.cohort_dir", return_value=tmp_path / "state"):
-        run_extraction(
-            "ARIC_EA", PROTEINS,
-            read_fn=_good_cis_df,
+def _load_rsids(ld_ref_dir: Path, n: int = 2) -> list[str]:
+    snplist = ld_ref_dir / "data_maf0.01_rs.snplist"
+    rsids: list[str] = []
+    with snplist.open() as fh:
+        for line in fh:
+            rsid = line.strip()
+            if rsid.startswith("rs"):
+                rsids.append(rsid)
+            if len(rsids) == n:
+                break
+    if len(rsids) < n:
+        raise RuntimeError(f"Expected at least {n} rsIDs in {snplist}")
+    return rsids
+
+
+def _write_config(path: Path) -> None:
+    cfg = {
+        "_meta": {"version": "1.0"},
+        "cis_extract": {
+            "window_kb": 500,
+            "pval_gw": 5e-8,
+            "maf_min": 0.01,
+            "palindrome_maf_max": 0.42,
+        },
+        "clump": {"window_kb": 1000, "r2": 0.001, "p1": 5e-8},
+        "fstat": {"weak_threshold": 10.0},
+        "harmonise": {"maf_proxy_max": 0.42, "proxy_r2_min": 0.8},
+        "outcome": {"kim_N": 434152},
+        "mhc": {"hg19": [25000000, 34000000], "hg38": [28500000, 33500000]},
+        "cohorts": {
+            "ARIC_EA": {"N": None, "build": "hg19"},
+            "Fenland": {"N": 10708, "build": "hg19"},
+            "deCODE": {"N_default": 35000, "build": "hg38"},
+            "UKB_PPP": {"N": None, "build": "hg19"},
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg))
+
+
+def _write_synthetic_aric(raw_dir: Path, rsids: list[str]) -> None:
+    aric_dir = raw_dir / "ARIC"
+    ea_dir = aric_dir / "EA"
+    ea_dir.mkdir(parents=True, exist_ok=True)
+
+    seqid_df = pd.DataFrame(
+        {
+            "seqid_in_sample": [p["seqid"] for p in PROTEINS],
+            "uniprot_id": [p["uniprot"] for p in PROTEINS],
+            "entrezgenesymbol": [p["gene"] for p in PROTEINS],
+            "chromosome_name": [p["chrom"] for p in PROTEINS],
+            "transcription_start_site": [p["tss"] for p in PROTEINS],
+        }
+    )
+    seqid_df.to_csv(aric_dir / "seqid.txt", sep="\t", index=False)
+
+    for protein, rsid in zip(PROTEINS, rsids):
+        # One valid GW-significant cis SNP and one non-significant SNP.
+        df = pd.DataFrame(
+            {
+                "#CHROM": [int(protein["chrom"]), int(protein["chrom"])],
+                "POS": [protein["tss"], protein["tss"] + 1_000],
+                "ID": [rsid, "rs999999999"],
+                "A1": ["A", "A"],
+                "REF": ["G", "G"],
+                "A1_FREQ": [0.25, 0.25],
+                "BETA": [0.5, 0.1],
+                "SE": [0.05, 0.05],
+                "P": [1e-10, 1e-4],
+                "OBS_CT": [7213, 7213],
+                "TEST": ["ADD", "ADD"],
+            }
         )
-    return out_dir
+        df.to_csv(ea_dir / f"{protein['seqid']}.PHENO1.glm.linear", sep="\t", index=False)
 
 
-# ─── Step 03: clump (mocked PLINK) ───────────────────────────────────────────
+def _write_synthetic_kim(raw_dir: Path, instruments_hg38_dir: Path) -> Path:
+    kim_dir = raw_dir / "kim_fibroid_gwas"
+    kim_dir.mkdir(parents=True, exist_ok=True)
 
-@pytest.fixture
-def instruments_dir(tmp_path, extracted_dir):
-    """Clump extracted proteins; return instruments directory."""
-    clump_cohort = _clump_mod.clump_cohort
+    rows: list[list[object]] = []
+    for tsv in sorted(instruments_hg38_dir.glob("*.tsv")):
+        instr = pd.read_csv(tsv, sep="\t")
+        for _, row in instr.iterrows():
+            rows.append(
+                [
+                    str(row["chrom_hg38"]).lstrip("chr"),
+                    int(row["pos_hg38"]),
+                    "A",  # effect_allele
+                    "G",  # other_allele
+                    0.18,  # beta
+                    0.02,  # standard_error
+                    0.32,  # effect_allele_frequency
+                    1e-6,  # p_value
+                    str(row["rsid"]),
+                    str(row["rsid"]),
+                    "",  # hm_coordinate_conversion
+                    "",  # hm_code
+                    "",  # variant_id
+                ]
+            )
 
-    out_dir = tmp_path / "instruments"
-    state_dir = tmp_path / "clump_state"
-    state_dir.mkdir(parents=True)
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "chromosome",
+            "base_pair_location",
+            "effect_allele",
+            "other_allele",
+            "beta",
+            "standard_error",
+            "effect_allele_frequency",
+            "p_value",
+            "rsid",
+            "rs_id",
+            "hm_coordinate_conversion",
+            "hm_code",
+            "variant_id",
+        ],
+    )
+    df = df.sort_values(["chromosome", "base_pair_location"], kind="stable")
 
-    def fake_clump(df, seqid, **kwargs):
-        return df.copy()  # trivially: all variants are lead SNPs
+    plain_tsv = kim_dir / "GCST90461958.h.tsv"
+    df.to_csv(plain_tsv, sep="\t", index=False, header=False)
 
-    with patch.object(_clump_mod, "cis_sumstats_dir", return_value=extracted_dir), \
-         patch.object(_clump_mod, "instruments_dir", return_value=out_dir), \
-         patch.object(_clump_mod, "cohort_dir", return_value=state_dir), \
-         patch.object(_clump_mod, "clump", side_effect=fake_clump):
-        clump_cohort("ARIC_EA")
-
-    return out_dir
-
-
-# ─── Step 04: liftover (mocked) ──────────────────────────────────────────────
-
-@pytest.fixture
-def instruments_hg38_dir(tmp_path, instruments_dir):
-    """Lift instrument files; return hg38 directory."""
-    lift_cohort = _liftover_mod.lift_cohort
-
-    out_dir = tmp_path / "instruments_hg38"
-    state_dir = tmp_path / "liftover_state"
-    state_dir.mkdir(parents=True)
-
-    def fake_lift_table(df, chrom_col="chrom", pos_col="pos", **kwargs):
-        df = df.copy()
-        df["chrom_hg38"] = df[chrom_col]
-        df["pos_hg38"] = df[pos_col]
-        return df
-
-    with patch.object(_liftover_mod, "instruments_dir", return_value=instruments_dir), \
-         patch.object(_liftover_mod, "instruments_hg38_dir", return_value=out_dir), \
-         patch.object(_liftover_mod, "cohort_dir", return_value=state_dir), \
-         patch.object(_liftover_mod, "lift_table", side_effect=fake_lift_table):
-        lift_cohort("ARIC_EA")
-
-    return out_dir
+    gz_path = Path(
+        pysam.tabix_index(
+            str(plain_tsv),
+            seq_col=0,
+            start_col=1,
+            end_col=1,
+            force=True,
+            zerobased=False,
+        )
+    )
+    assert gz_path.exists()
+    assert (gz_path.parent / f"{gz_path.name}.tbi").exists()
+    return gz_path
 
 
-# ─── Step 05: harmonise (mocked outcome + mocked R) ─────────────────────────
+@pytest.fixture(scope="module")
+def real_run(tmp_path_factory):
+    repo_root = _repo_root()
+    py = repo_root / ".venv" / "bin" / "python"
 
-def _fake_outcome_row(chrom, pos):
+    ld_ref_dir = repo_root / "data" / "ld_ref" / "ld_files"
+    plink2_fallback = Path("/Users/spuduch/Research/MR_IA/plink2_mac_arm64_20260228/plink2")
+    ld_prefix = ld_ref_dir / "data_maf0.01_rs"
+    chain = repo_root / "data" / "ref" / "hg19ToHg38.over.chain.gz"
+
+    if not py.exists():
+        pytest.fail("Missing .venv/bin/python")
+    if not Path(f"{ld_prefix}.bed").exists():
+        pytest.fail("LD reference not found at README paths under data/ld_ref/ld_files")
+    if not chain.exists():
+        pytest.fail("Liftover chain file missing: data/ref/hg19ToHg38.over.chain.gz")
+    try:
+        plink_probe = subprocess.run(["plink2", "--help"], capture_output=True, text=True)
+    except OSError:
+        plink_probe = None
+    if plink_probe is None or plink_probe.returncode not in {0, 1}:
+        if not plink2_fallback.exists():
+            pytest.fail(
+                "plink2 is not available on PATH and fallback binary not found "
+                "at /Users/spuduch/Research/MR_IA/plink2_mac_arm64_20260228/plink2"
+            )
+
+    r_check = subprocess.run(
+        ["Rscript", "-e", 'quit(save="no", status=ifelse(requireNamespace("TwoSampleMR", quietly=TRUE),0,42))'],
+        capture_output=True,
+        text=True,
+    )
+    if r_check.returncode == 42:
+        pytest.fail("TwoSampleMR is not installed in this environment")
+    if r_check.returncode != 0:
+        pytest.fail("Rscript unavailable for harmonisation")
+
+    run_root = tmp_path_factory.mktemp("e2e_real")
+    raw_dir = run_root / "raw"
+    processed_dir = run_root / "processed"
+    logs_dir = run_root / "logs"
+    config_path = run_root / "config" / "pipeline.json"
+
+    rsids = _load_rsids(ld_ref_dir, n=2)
+    _write_synthetic_aric(raw_dir, rsids)
+    _write_config(config_path)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "LEIO_ROOT": str(repo_root),
+            "LEIO_RAW_DIR": str(raw_dir),
+            "LEIO_PROCESSED_DIR": str(processed_dir),
+            "LEIO_LOGS_DIR": str(logs_dir),
+            "LEIO_LD_REF_DIR": str(ld_ref_dir),
+            "LEIO_REF_DIR": str(repo_root / "data" / "ref"),
+        }
+    )
+    if plink_probe is None or plink_probe.returncode not in {0, 1}:
+        env["PATH"] = f"{plink2_fallback.parent}:{env.get('PATH', '')}"
+
+    _run(
+        [
+            str(py),
+            "scripts/02_cis_pqtl_extract/aric.py",
+            "--limit",
+            "2",
+            "--config",
+            str(config_path),
+        ],
+        env=env,
+        cwd=repo_root,
+    )
+    _run(
+        [
+            str(py),
+            "scripts/03_clump/clump.py",
+            "--cohort",
+            "ARIC_EA",
+            "--config",
+            str(config_path),
+        ],
+        env=env,
+        cwd=repo_root,
+    )
+    _run(
+        [
+            str(py),
+            "scripts/04_liftover/instruments_to_hg38.py",
+            "--cohort",
+            "ARIC_EA",
+            "--config",
+            str(config_path),
+        ],
+        env=env,
+        cwd=repo_root,
+    )
+
+    instruments_hg38_dir = processed_dir / "ARIC_EA" / "instruments_hg38"
+    _write_synthetic_kim(raw_dir, instruments_hg38_dir)
+
+    _run(
+        [
+            str(py),
+            "scripts/05_harmonise/harmonise.py",
+            "--cohort",
+            "ARIC_EA",
+            "--config",
+            str(config_path),
+        ],
+        env=env,
+        cwd=repo_root,
+    )
+
     return {
-        "chrom_hg38": str(chrom),
-        "pos_hg38": int(pos),
-        "rsid": "rs12345",
-        "EA_out": "A", "OA_out": "G",
-        "EAF_out": 0.32,
-        "beta_out": 0.18, "se_out": 0.02,
-        "pval_out": 1e-6,
-        "N_out": 434_152,
+        "extracted_dir": processed_dir / "ARIC_EA" / "cis_sumstats",
+        "harmonised_dir": processed_dir / "ARIC_EA" / "harmonised",
     }
 
 
-@pytest.fixture
-def harmonised_dir(tmp_path, instruments_hg38_dir):
-    harmonise_cohort = _harmonise_mod.harmonise_cohort
-
-    out_dir = tmp_path / "harmonised"
-    state_dir = tmp_path / "harm_state"
-    state_dir.mkdir(parents=True)
-
-    class FakeOutcome:
-        def fetch_snps(self, positions):
-            rows = []
-            for chrom, pos in positions:
-                rows.append({
-                    "chromosome": str(chrom), "base_pair_location": pos,
-                    "effect_allele": "A", "other_allele": "G",
-                    "beta": "0.18", "standard_error": "0.02",
-                    "effect_allele_frequency": "0.32",
-                    "p_value": "1e-6",
-                    "rsid": "rs12345", "rs_id": "rs12345",
-                    "hm_coordinate_conversion": "", "hm_code": "", "variant_id": "",
-                })
-            cols = [
-                "chromosome", "base_pair_location", "effect_allele", "other_allele",
-                "beta", "standard_error", "effect_allele_frequency", "p_value",
-                "rsid", "rs_id", "hm_coordinate_conversion", "hm_code", "variant_id",
-            ]
-            df = pd.DataFrame(rows, columns=cols)
-            df["base_pair_location"] = df["base_pair_location"].astype(int)
-            df["N"] = 434_152
-            return df
-
-        def fetch_by_rsid(self, rsids):
-            return pd.DataFrame()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            pass
-
-    def fake_harmonise_r(df, seqid):
-        # Return a minimal harmonised DataFrame
-        return pd.DataFrame({
-            "seqid": [seqid], "rsid": ["rs12345"],
-            "EA": ["A"], "OA": ["G"],
-            "beta_exp": [0.5], "se_exp": [0.05], "pval_exp": [1e-9], "N_exp": [7213],
-            "EA_out": ["A"], "OA_out": ["G"],
-            "beta_out": [0.18], "se_out": [0.02], "pval_out": [1e-6], "N_out": [434_152],
-        })
-
-    with patch.object(_harmonise_mod, "instruments_hg38_dir", return_value=instruments_hg38_dir), \
-         patch.object(_harmonise_mod, "harmonised_dir", return_value=out_dir), \
-         patch.object(_harmonise_mod, "cohort_dir", return_value=state_dir), \
-         patch.object(_harmonise_mod, "OutcomeLookup", return_value=FakeOutcome()), \
-         patch.object(_harmonise_mod, "find_proxies", return_value={}), \
-         patch.object(_harmonise_mod, "_call_harmonise_r", side_effect=fake_harmonise_r):
-        harmonise_cohort("ARIC_EA")
-
-    return out_dir
-
-
-# ─── Step 09: assemble ───────────────────────────────────────────────────────
-
 class TestEndToEndSmoke:
-    def test_pipeline_produces_results_for_both_proteins(
-        self, tmp_path, harmonised_dir
-    ):
-        """Verify that both proteins have output files after harmonisation."""
-        files = list(harmonised_dir.glob("*.tsv"))
+    def test_pipeline_produces_results_for_both_proteins(self, real_run):
+        files = list(real_run["harmonised_dir"].glob("*.tsv"))
         seqids = {f.stem for f in files}
         assert "SeqId_P1" in seqids
         assert "SeqId_P2" in seqids
 
-    def test_fdr_tiering_produces_expected_columns(self, harmonised_dir):
-        """Read harmonised outputs, add FDR, apply tier — expect tier column."""
+    def test_fdr_tiering_produces_expected_columns(self, real_run):
         tier = _assemble_mod.tier
 
         frames = []
-        for tsv in harmonised_dir.glob("*.tsv"):
+        for tsv in real_run["harmonised_dir"].glob("*.tsv"):
             df = pd.read_csv(tsv, sep="\t")
             df["seqid"] = tsv.stem
             frames.append(df)
 
         mr = pd.concat(frames, ignore_index=True)
-        mr["pval"] = mr.get("pval_exp", pd.Series([1e-9] * len(mr)))
+        mr["pval"] = mr.get("pval.exposure", pd.Series([1e-9] * len(mr)))
         mr = add_fdr(mr, pval_col="pval", alpha=0.05)
         mr["passes_sensitivity"] = True
         mr["sharepro_coloc_positive"] = True
@@ -228,12 +336,11 @@ class TestEndToEndSmoke:
         mr["tier"] = mr.apply(tier, axis=1)
 
         assert "tier" in mr.columns
-        assert len(mr) == 2  # one row per protein
+        assert len(mr) == 2
         assert all(mr["tier"] == "Tier1_replicated")
 
-    def test_extraction_output_has_required_norm_cols(self, extracted_dir):
-        """Extracted TSVs must have all NORM_COLS."""
-        for tsv in extracted_dir.glob("*.tsv"):
+    def test_extraction_output_has_required_norm_cols(self, real_run):
+        for tsv in real_run["extracted_dir"].glob("*.tsv"):
             df = pd.read_csv(tsv, sep="\t")
             missing = [c for c in NORM_COLS if c not in df.columns]
             assert not missing, f"{tsv.name}: missing columns {missing}"

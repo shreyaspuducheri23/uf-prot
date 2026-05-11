@@ -22,14 +22,13 @@ else
   echo "  Already exists: $CHAIN"
 fi
 
-echo "=== Checking plink1 binary ==="
-PLINK1=data/ld_ref/plink1.90
-if [ ! -x "$PLINK1" ]; then
-  echo "ERROR: $PLINK1 not found or not executable."
-  echo "  The plink1.90 binary should be available via the ld_ref symlink."
+echo "=== Checking plink2 executable ==="
+if ! command -v plink2 >/dev/null 2>&1; then
+  echo "ERROR: plink2 not found on PATH."
+  echo "  Install PLINK2 and ensure the 'plink2' command is available."
   exit 1
 fi
-echo "  plink1: OK ($("$PLINK1" --version 2>&1 | head -1))"
+echo "  plink2: OK ($(plink2 --version 2>&1 | head -1))"
 
 echo "=== Checking Synapse credentials ==="
 if [ ! -f "$HOME/.synapseConfig" ]; then

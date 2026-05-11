@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from scripts.lib.schema import ProteinMeta
-from scripts.lib.cis_extract import _apply_filters, _normalize, run_extraction
+from scripts.lib.cis_extract import _apply_filters, _normalize, run_extraction, OUTPUT_COLS
 
 
 @pytest.fixture
@@ -141,8 +141,10 @@ class TestRunExtraction:
         out_dir = tmp_path / "processed_data" / cohort / "cis_sumstats"
         out_dir.mkdir(parents=True)
 
-        # Pre-create output file to simulate completed protein
-        (out_dir / f"{sample_protein.seqid}.tsv").write_text("seqid\n")
+        # Pre-create a minimally valid output file to simulate completed protein
+        pd.DataFrame(
+            [{col: "x" for col in OUTPUT_COLS}]
+        ).to_csv(out_dir / f"{sample_protein.seqid}.tsv", sep="\t", index=False)
 
         call_count = {"n": 0}
         def read_fn(p):

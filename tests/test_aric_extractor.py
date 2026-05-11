@@ -29,21 +29,21 @@ class TestReadAricProtein:
     def test_required_columns_present(self, sample_protein):
         result = aric.read_aric_protein(sample_protein)
         if result is None:
-            pytest.skip("File not found for sample protein")
+            pytest.fail("File not found for sample protein")
         for col in ["chrom", "pos", "EA", "OA", "EAF", "beta", "se", "pval", "N"]:
             assert col in result.columns, f"Missing column: {col}"
 
     def test_rsid_dot_for_non_rs(self, sample_protein):
         result = aric.read_aric_protein(sample_protein)
         if result is None:
-            pytest.skip("File not found")
+            pytest.fail("File not found")
         non_rs = result[~result["rsid"].str.startswith("rs")]
         assert all(non_rs["rsid"] == ".")
 
     def test_chrom_is_string(self, sample_protein):
         result = aric.read_aric_protein(sample_protein)
         if result is None:
-            pytest.skip("File not found")
+            pytest.fail("File not found")
         assert pd.api.types.is_string_dtype(result["chrom"])
 
     def test_missing_seqid_returns_none(self):

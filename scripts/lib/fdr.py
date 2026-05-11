@@ -8,19 +8,21 @@ def bh_fdr(pvals: pd.Series, alpha: float = 0.05) -> pd.Series:
     Benjamini-Hochberg FDR. Returns adjusted p-values (q-values).
     NaN inputs are preserved as NaN.
     """
-    n = len(pvals)
-    if n == 0:
+    if len(pvals) == 0:
         return pvals.copy()
 
     nan_mask = pvals.isna()
     valid_idx = pvals[~nan_mask].index
     valid_p = pvals[~nan_mask].values.astype(float)
+    m = len(valid_p)
+    if m == 0:
+        return pvals.copy().astype(float)
 
     order = np.argsort(valid_p)
     ranks = np.empty_like(order)
-    ranks[order] = np.arange(1, len(valid_p) + 1)
+    ranks[order] = np.arange(1, m + 1)
 
-    adjusted = np.minimum(1.0, valid_p * n / ranks)
+    adjusted = np.minimum(1.0, valid_p * m / ranks)
     # Enforce monotonicity (from largest to smallest rank)
     for i in range(len(adjusted) - 2, -1, -1):
         adjusted[order[i]] = min(adjusted[order[i]], adjusted[order[i + 1]])

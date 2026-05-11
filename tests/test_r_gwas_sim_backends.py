@@ -30,7 +30,7 @@ write.table(dat, file = "{out_path}", sep = "\\t", row.names = FALSE, quote = FA
 """
     proc = subprocess.run(["Rscript", "-e", script], capture_output=True, text=True)
     if proc.returncode == 42:
-        pytest.skip("GWASBrewer/simGWAS not installed in test environment")
+        pytest.fail("GWASBrewer/simGWAS not installed in test environment")
     assert proc.returncode == 0, proc.stderr
 
     df = pd.read_csv(out_path, sep="\t")

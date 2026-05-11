@@ -12,7 +12,7 @@ class TestParseBulkUrls:
     @pytest.fixture(scope="class")
     def urls(self):
         if not DECODE_URLS.exists():
-            pytest.skip("deCODE bulk_urls.txt not present")
+            pytest.fail("deCODE bulk_urls.txt not present")
         return parse_bulk_urls(DECODE_URLS)
 
     def test_returns_list_of_tuples(self, urls):

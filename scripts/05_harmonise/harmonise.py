@@ -24,13 +24,14 @@ from scripts.lib.outcome import OutcomeLookup, normalize_outcome_row, KIM_N
 from scripts.lib.paths import (
     COHORTS, ROOT, cohort_dir, instruments_hg38_dir, harmonised_dir
 )
-from scripts.lib.plink import find_proxies
+from scripts.lib.plink import find_proxies, in_phase_allele_map
 from scripts.lib.progress import bar
 from scripts.lib.sumstats_io import read_norm, write_norm
 
 log = setup_logger("05_harmonise")
 
 MAF_PROXY_MAX = 0.42
+HARMONISED_REQUIRED_COLS = ["seqid"]
 
 
 def harmonise_cohort(cohort: str, limit: int | None = None) -> int:
@@ -55,7 +56,7 @@ def harmonise_cohort(cohort: str, limit: int | None = None) -> int:
             seqid = tsv_path.stem
             out_path = out_dir / f"{seqid}.tsv"
 
-            if output_exists(out_path):
+            if output_exists(out_path, required_cols=HARMONISED_REQUIRED_COLS, min_rows=1):
                 cp.mark_done(seqid)
                 n_ok += 1
                 continue
@@ -97,7 +98,7 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
     positions = list(zip(df["chrom_hg38"].astype(str), df["pos_hg38"].astype(int)))
     out_df = outcome.fetch_snps(positions)
 
-    # Build lookup: (chrom, pos) → outcome row
+    # Build lookup: (chrom, pos) -> outcome row
     out_lookup: dict[tuple[str, int], dict] = {}
     n_dup_pos = 0
     for _, row in out_df.iterrows():
@@ -111,16 +112,25 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
             f"last row kept for each duplicate"
         )
 
-    rows = []
+    rows: list[dict] = []
     n_proxies = 0
     n_no_rsid = 0
     missing_rsids: list[str] = []
     missing_idx: list[int] = []
+    outcome_fields = ["EA_out", "OA_out", "EAF_out", "beta_out", "se_out", "pval_out", "N_out"]
 
     for i, (_, instr) in enumerate(df.iterrows()):
         key = (str(instr["chrom_hg38"]), int(instr["pos_hg38"]))
         if key in out_lookup:
-            rows.append({**instr.to_dict(), **out_lookup[key]})
+            out_row = out_lookup[key]
+            merged = instr.to_dict()
+            for field in outcome_fields:
+                merged[field] = out_row.get(field)
+            merged["outcome_rsid"] = out_row.get("rsid")
+            merged["outcome_chrom_hg38"] = out_row.get("chrom_hg38")
+            merged["outcome_pos_hg38"] = out_row.get("pos_hg38")
+            merged["proxy_used"] = False
+            rows.append(merged)
         else:
             rsid = str(instr.get("rsid", "."))
             if rsid != "." and rsid:
@@ -155,6 +165,8 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
                     continue
 
                 instr = df.iloc[i]
+                target_ea = str(instr.get("EA", "")).upper()
+                target_oa = str(instr.get("OA", "")).upper()
                 # Check proxy MAF
                 proxy_row = proxy_lookup[proxy_rsid]
                 eaf = proxy_row.get("EAF_out")
@@ -163,13 +175,53 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
                     if maf > MAF_PROXY_MAX:
                         continue
 
-                merged = {
-                    **instr.to_dict(),
-                    **proxy_row,
+                # Align proxy outcome effect to target exposure allele using LD phase.
+                allele_map = in_phase_allele_map(target, proxy_rsid)
+                if not allele_map:
+                    continue
+
+                proxy_for_target_ea = allele_map.get(target_ea)
+                proxy_for_target_oa = allele_map.get(target_oa)
+                if not proxy_for_target_ea or not proxy_for_target_oa:
+                    continue
+
+                proxy_effect_allele = str(proxy_row.get("EA_out", "")).upper()
+                if proxy_effect_allele == proxy_for_target_ea:
+                    flip = False
+                elif proxy_effect_allele == proxy_for_target_oa:
+                    flip = True
+                else:
+                    continue
+
+                beta_out = proxy_row.get("beta_out")
+                eaf_out = proxy_row.get("EAF_out")
+                if flip:
+                    if beta_out is not None:
+                        beta_out = -float(beta_out)
+                    if eaf_out is not None:
+                        eaf_out = 1 - float(eaf_out)
+
+                merged = instr.to_dict()
+                merged.update({
+                    "EA_out": proxy_row.get("EA_out"),
+                    "OA_out": proxy_row.get("OA_out"),
+                    "EAF_out": eaf_out,
+                    "beta_out": beta_out,
+                    "se_out": proxy_row.get("se_out"),
+                    "pval_out": proxy_row.get("pval_out"),
+                    "N_out": proxy_row.get("N_out"),
+                    "outcome_rsid": target,  # harmonise against target SNP identity
+                    "outcome_chrom_hg38": proxy_row.get("chrom_hg38"),
+                    "outcome_pos_hg38": proxy_row.get("pos_hg38"),
                     "proxy_rsid": proxy_rsid,
                     "proxy_r2": proxy_r2,
-                }
-                # Update hg38 coords from proxy
+                    "proxy_used": True,
+                    "proxy_flip": flip,
+                    "proxy_target_a1": target_ea,
+                    "proxy_target_a2": target_oa,
+                    "proxy_a1": proxy_for_target_ea,
+                    "proxy_a2": proxy_for_target_oa,
+                })
                 rows.append(merged)
                 n_proxies += 1
 

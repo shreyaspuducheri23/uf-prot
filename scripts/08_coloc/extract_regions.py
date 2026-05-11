@@ -25,6 +25,8 @@ from scripts.lib.progress import bar
 from scripts.lib.sumstats_io import read_norm, write_norm
 
 log = setup_logger("08_extract_regions")
+EXPOSURE_REGION_REQUIRED_COLS = ["chrom", "pos"]
+OUTCOME_REGION_REQUIRED_COLS = ["chromosome", "base_pair_location"]
 
 
 def load_candidates(cohort: str) -> list[str]:
@@ -150,7 +152,10 @@ def extract_cohort_regions(
                 exp_path = out_dir / "exposure.tsv"
                 out_path = out_dir / "outcome.tsv"
 
-                if output_exists(exp_path) and output_exists(out_path):
+                if (
+                    output_exists(exp_path, required_cols=EXPOSURE_REGION_REQUIRED_COLS, min_rows=1)
+                    and output_exists(out_path, required_cols=OUTCOME_REGION_REQUIRED_COLS, min_rows=1)
+                ):
                     cp.mark_done(seqid)
                     n_ok += 1
                     continue

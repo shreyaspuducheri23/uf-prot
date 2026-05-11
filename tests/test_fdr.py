@@ -23,6 +23,15 @@ class TestBhFdr:
         adj = bh_fdr(pvals)
         assert pd.isna(adj.iloc[1])
 
+    def test_uses_non_nan_count_for_bh_denominator(self):
+        pvals = pd.Series([0.01, float("nan"), 0.02])
+        adj = bh_fdr(pvals)
+        # Non-NaN p-values are [0.01, 0.02], so m=2.
+        # q(0.01)=min(0.01*2/1, 0.02*2/2)=0.02; q(0.02)=0.02.
+        assert adj.iloc[0] == pytest.approx(0.02)
+        assert pd.isna(adj.iloc[1])
+        assert adj.iloc[2] == pytest.approx(0.02)
+
     def test_empty_series(self):
         pvals = pd.Series([], dtype=float)
         adj = bh_fdr(pvals)

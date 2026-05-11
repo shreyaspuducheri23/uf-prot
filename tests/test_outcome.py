@@ -5,10 +5,8 @@ import pandas as pd
 from scripts.lib.paths import KIM_GWAS
 
 
-pytestmark = pytest.mark.skipif(
-    not KIM_GWAS.exists(),
-    reason="Kim GWAS file not present",
-)
+if not KIM_GWAS.exists():
+    pytest.fail("Kim GWAS file not present")
 
 
 from scripts.lib.outcome import OutcomeLookup, KIM_N, normalize_outcome_row

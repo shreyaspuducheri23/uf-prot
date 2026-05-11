@@ -28,7 +28,7 @@ REF = _env_path("LEIO_REF_DIR", ROOT / "data" / "ref")
 CHAIN_HG19_TO_HG38 = REF / "hg19ToHg38.over.chain.gz"
 LD_REF_DIR = _env_path("LEIO_LD_REF_DIR", ROOT / "data" / "ld_ref" / "ld_files")
 LD_REF_PREFIX = LD_REF_DIR / "data_maf0.01_rs"  # .bed/.bim/.fam
-PLINK1 = _env_path("LEIO_PLINK1", ROOT / "data" / "ld_ref" / "plink1.90")
+PLINK2 = "plink2"
 
 # Tools
 TOOLS = _env_path("LEIO_TOOLS_DIR", ROOT / "tools")

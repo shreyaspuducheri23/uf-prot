@@ -72,7 +72,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
 
     for protein in bar(todo, desc=f"{cohort} extract"):
         out_path = out_dir / f"{protein.seqid}.tsv"
-        if output_exists(out_path):
+        if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
             cp.mark_done(protein.seqid)
             n_ok += 1
             continue
@@ -116,7 +116,7 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
     def process_one(protein: ProteinMeta) -> tuple[str, bool]:
         nonlocal n_ok, n_empty
         out_path = out_dir / f"{protein.seqid}.tsv"
-        if output_exists(out_path):
+        if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
             with lock:
                 cp.mark_done(protein.seqid)
                 n_ok += 1

@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def _write_fake_plink(path: Path) -> None:
+def _write_fake_plink2(path: Path) -> None:
     script = textwrap.dedent(
         """\
         #!/usr/bin/env python3
@@ -34,8 +34,8 @@ def _write_fake_plink(path: Path) -> None:
                     kept.append(row)
 
         if kept:
-            with open(out_prefix + ".clumped", "w") as out:
-                out.write("SNP P\\n")
+            with open(out_prefix + ".clumps", "w") as out:
+                out.write("ID P\\n")
                 for row in kept:
                     out.write(f"{row['SNP']} {row['P']}\\n")
         """
@@ -113,11 +113,11 @@ def _run_blackbox(tmp_path: Path, clump_p1: float) -> int:
     logs_dir = run_root / "logs"
     ld_ref_dir = run_root / "ld_ref" / "ld_files"
     config_path = run_root / "config" / "pipeline.json"
-    plink1_path = run_root / "bin" / "plink1.90"
+    plink2_path = run_root / "bin" / "plink2"
 
     _write_synthetic_aric(raw_dir)
     _write_config(config_path, clump_p1)
-    _write_fake_plink(plink1_path)
+    _write_fake_plink2(plink2_path)
     ld_ref_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
@@ -127,7 +127,7 @@ def _run_blackbox(tmp_path: Path, clump_p1: float) -> int:
             "LEIO_PROCESSED_DIR": str(processed_dir),
             "LEIO_LOGS_DIR": str(logs_dir),
             "LEIO_LD_REF_DIR": str(ld_ref_dir),
-            "LEIO_PLINK1": str(plink1_path),
+            "PATH": f"{plink2_path.parent}:{os.environ.get('PATH', '')}",
         }
     )
 

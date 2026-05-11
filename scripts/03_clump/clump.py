@@ -28,6 +28,8 @@ from scripts.lib.sumstats_io import read_norm, write_norm
 
 log = setup_logger("03_clump")
 
+INSTRUMENT_REQUIRED_COLS = ["seqid", "chrom", "pos", "rsid", "pval", "F_stat"]
+
 
 def clump_cohort(
     cohort: str,
@@ -56,7 +58,7 @@ def clump_cohort(
         seqid = tsv_path.stem
         out_path = out_dir / f"{seqid}.tsv"
 
-        if output_exists(out_path):
+        if output_exists(out_path, required_cols=INSTRUMENT_REQUIRED_COLS, min_rows=1):
             cp.mark_done(seqid)
             n_ok += 1
             continue

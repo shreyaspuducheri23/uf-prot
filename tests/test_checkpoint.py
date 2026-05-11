@@ -86,3 +86,18 @@ class TestOutputExists:
         f = tmp_path / "empty.tsv"
         f.touch()
         assert not output_exists(f)
+
+    def test_required_columns_missing_returns_false(self, tmp_path):
+        f = tmp_path / "out.tsv"
+        f.write_text("a\tb\n1\t2\n")
+        assert not output_exists(f, required_cols=["a", "c"])
+
+    def test_required_columns_present_returns_true(self, tmp_path):
+        f = tmp_path / "out.tsv"
+        f.write_text("a\tb\n1\t2\n")
+        assert output_exists(f, required_cols=["a", "b"])
+
+    def test_min_rows_enforced(self, tmp_path):
+        f = tmp_path / "header_only.tsv"
+        f.write_text("a\tb\n")
+        assert not output_exists(f, required_cols=["a", "b"], min_rows=1)
