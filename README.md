@@ -233,6 +233,8 @@ logs/
 
 ```bash
 uv run pytest tests/ -v
+uv run pytest tests/ -v -m "not gwas_oracle_slow"
+uv run pytest tests/ -v -m gwas_oracle_slow
 ```
 
 85 tests cover all shared library modules (filters, FDR, F-stat, checkpointing, sumstats I/O, cis-window logic, ARIC file parsing, outcome tabix lookup, Synapse streaming, deCODE streaming, extraction pipeline). Tests requiring absent files (liftover chain, Synapse credentials) are automatically skipped.

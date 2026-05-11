@@ -80,6 +80,7 @@ def harmonise_cohort(cohort: str, limit: int | None = None) -> int:
                 cp.mark_done(seqid)
                 continue
 
+            harmonised = _restore_metadata(harmonised, df, seqid)
             write_norm(harmonised, out_path)
             cp.mark_done(seqid)
             n_ok += 1
@@ -277,6 +278,56 @@ def _call_harmonise_r(df: pd.DataFrame, seqid: str) -> pd.DataFrame | None:
             return None
 
         return pd.read_csv(result_path, sep="\t")
+
+
+def _restore_metadata(harmonised: pd.DataFrame, source_df: pd.DataFrame, seqid: str) -> pd.DataFrame:
+    """
+    Reattach stable protein metadata that TwoSampleMR does not reliably preserve.
+
+    Harmonised output can carry SNP IDs under different column names (commonly `SNP`),
+    so we merge by whichever SNP key is present.
+    """
+    out = harmonised.copy()
+    src = source_df.copy()
+
+    if "rsid" in src.columns:
+        src = src[src["rsid"].notna() & (src["rsid"] != ".")].copy()
+        src = src.drop_duplicates(subset=["rsid"], keep="first")
+    else:
+        src = pd.DataFrame()
+
+    fallback_gene = src["gene"].dropna().iloc[0] if "gene" in src.columns and src["gene"].notna().any() else None
+    fallback_uniprot = (
+        src["uniprot"].dropna().iloc[0]
+        if "uniprot" in src.columns and src["uniprot"].notna().any()
+        else None
+    )
+
+    snp_key = None
+    for candidate in ("SNP", "rsid", "rsid.exposure", "rsid.outcome"):
+        if candidate in out.columns:
+            snp_key = candidate
+            break
+
+    if snp_key and not src.empty:
+        meta_cols = [c for c in ("rsid", "gene", "uniprot") if c in src.columns]
+        meta = src[meta_cols].copy()
+        out = out.merge(meta, left_on=snp_key, right_on="rsid", how="left", suffixes=("", "_src"))
+        if "rsid_src" in out.columns:
+            out = out.drop(columns=["rsid_src"])
+
+    out["seqid"] = seqid
+    if "gene" not in out.columns:
+        out["gene"] = fallback_gene
+    else:
+        out["gene"] = out["gene"].fillna(fallback_gene)
+
+    if "uniprot" not in out.columns:
+        out["uniprot"] = fallback_uniprot
+    else:
+        out["uniprot"] = out["uniprot"].fillna(fallback_uniprot)
+
+    return out
 
 
 def main() -> None:
