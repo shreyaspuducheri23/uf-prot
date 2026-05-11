@@ -17,7 +17,6 @@ log = setup_logger("01_outcome_prep")
 
 
 def parse_meta(meta_path) -> dict:
-    import yaml  # optional dep; use basic parsing if absent
     try:
         import yaml
         with open(meta_path) as fh:

@@ -22,6 +22,7 @@ class Checkpoint:
         self._path = state_path
         self._done: set[str] = set()
         self._failed: dict[str, dict] = {}
+        self._dirty = False
         self._load()
 
     def _load(self) -> None:
@@ -61,6 +62,7 @@ class Checkpoint:
         self._path.write_text(
             json.dumps({"done": sorted(self._done), "status": status}, indent=2)
         )
+        self._dirty = False
 
     def is_done(self, key: str) -> bool:
         return key in self._done
@@ -73,18 +75,26 @@ class Checkpoint:
             return None
         return str(self._failed[key].get("reason", ""))
 
-    def mark_done(self, key: str) -> None:
+    def mark_done(self, key: str, save: bool = True) -> None:
         self._done.add(key)
         self._failed.pop(key, None)
-        self._save()
+        self._dirty = True
+        if save:
+            self._save()
 
-    def mark_failed(self, key: str, reason: str) -> None:
+    def mark_failed(self, key: str, reason: str, save: bool = True) -> None:
         self._done.discard(key)
         self._failed[key] = {
             "reason": reason,
             "updated_at": _utc_now_iso(),
         }
-        self._save()
+        self._dirty = True
+        if save:
+            self._save()
+
+    def flush(self) -> None:
+        if self._dirty:
+            self._save()
 
     def remaining(self, items: Iterable[T], key=lambda x: x, include_failed: bool = True) -> Iterable[T]:
         """Yield items whose key is not already in the done set."""

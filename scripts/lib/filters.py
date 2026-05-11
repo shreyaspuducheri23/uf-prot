@@ -53,11 +53,10 @@ def drop_ambig_palindromes(df: pd.DataFrame, maf_threshold: float = 0.42,
     Drop A/T or C/G variants with MAF > maf_threshold (ambiguous strand).
     Variants with MAF <= maf_threshold are kept (strand can be inferred from freq).
     """
-    PALINDROMES = {frozenset(["A", "T"]), frozenset(["C", "G"])}
-    is_palindrome = df.apply(
-        lambda r: frozenset([str(r[ea_col]).upper(), str(r[oa_col]).upper()]) in PALINDROMES,
-        axis=1,
-    )
+    ea = df[ea_col].astype(str).str.upper()
+    oa = df[oa_col].astype(str).str.upper()
+    is_palindrome = ((ea == "A") & (oa == "T")) | ((ea == "T") & (oa == "A")) | \
+                    ((ea == "C") & (oa == "G")) | ((ea == "G") & (oa == "C"))
     eaf = df[eaf_col].astype(float)
     maf = eaf.where(eaf <= 0.5, 1 - eaf)
     ambig = is_palindrome & (maf > maf_threshold)

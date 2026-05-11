@@ -21,6 +21,7 @@ from scripts.lib.schema import ProteinMeta
 from scripts.lib.sumstats_io import write_norm
 
 log = logging.getLogger(__name__)
+_CP_FLUSH_EVERY = 50
 
 # Normalized output columns for cis_sumstats TSVs
 OUTPUT_COLS = [
@@ -73,12 +74,17 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
                     cfg: dict | None = None) -> int:
     n_ok = 0
     n_empty = 0
+    n_since_flush = 0
 
     for protein in bar(todo, desc=f"{cohort} extract"):
         out_path = out_dir / f"{protein.seqid}.tsv"
         if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
-            cp.mark_done(protein.seqid)
+            cp.mark_done(protein.seqid, save=False)
+            n_since_flush += 1
             n_ok += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
             continue
 
         try:
@@ -89,21 +95,34 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
 
         if raw is None or raw.empty:
             n_empty += 1
-            cp.mark_done(protein.seqid)
+            cp.mark_done(protein.seqid, save=False)
+            n_since_flush += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
             continue
 
         filtered = _apply_filters(raw, protein, cfg)
         if filtered.empty:
             log.debug(f"{protein.seqid}: 0 variants after filters")
             n_empty += 1
-            cp.mark_done(protein.seqid)
+            cp.mark_done(protein.seqid, save=False)
+            n_since_flush += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
             continue
 
         normalized = _normalize(filtered, protein)
         write_norm(normalized, out_path)
-        cp.mark_done(protein.seqid)
+        cp.mark_done(protein.seqid, save=False)
+        n_since_flush += 1
         n_ok += 1
+        if n_since_flush >= _CP_FLUSH_EVERY:
+            cp.flush()
+            n_since_flush = 0
 
+    cp.flush()
     log.info(f"{cohort}: done. {n_ok} proteins with cis-pQTLs, {n_empty} empty after filters.")
     return n_ok
 
@@ -115,14 +134,19 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
     lock = threading.Lock()
     n_ok = 0
     n_empty = 0
+    n_since_flush = 0
 
     def process_one(protein: ProteinMeta) -> tuple[str, bool]:
-        nonlocal n_ok, n_empty
+        nonlocal n_ok, n_empty, n_since_flush
         out_path = out_dir / f"{protein.seqid}.tsv"
         if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
             with lock:
-                cp.mark_done(protein.seqid)
+                cp.mark_done(protein.seqid, save=False)
                 n_ok += 1
+                n_since_flush += 1
+                if n_since_flush >= _CP_FLUSH_EVERY:
+                    cp.flush()
+                    n_since_flush = 0
             return protein.seqid, True
 
         try:
@@ -134,7 +158,11 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
         if raw is None or raw.empty:
             with lock:
                 n_empty += 1
-                cp.mark_done(protein.seqid)
+                cp.mark_done(protein.seqid, save=False)
+                n_since_flush += 1
+                if n_since_flush >= _CP_FLUSH_EVERY:
+                    cp.flush()
+                    n_since_flush = 0
             return protein.seqid, True
 
         filtered = _apply_filters(raw, protein, cfg)
@@ -142,14 +170,22 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
             log.debug(f"{protein.seqid}: 0 variants after filters")
             with lock:
                 n_empty += 1
-                cp.mark_done(protein.seqid)
+                cp.mark_done(protein.seqid, save=False)
+                n_since_flush += 1
+                if n_since_flush >= _CP_FLUSH_EVERY:
+                    cp.flush()
+                    n_since_flush = 0
             return protein.seqid, True
 
         normalized = _normalize(filtered, protein)
         with lock:
             write_norm(normalized, out_path)
-            cp.mark_done(protein.seqid)
+            cp.mark_done(protein.seqid, save=False)
             n_ok += 1
+            n_since_flush += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
         return protein.seqid, True
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -161,6 +197,7 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
     for future in futures:
         future.result()
 
+    cp.flush()
     log.info(f"{cohort}: done (parallel). {n_ok} proteins with cis-pQTLs, {n_empty} empty.")
     return n_ok
 

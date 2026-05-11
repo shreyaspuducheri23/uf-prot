@@ -1,14 +1,22 @@
 """Tests for scripts.02_cis_pqtl_extract.decode (read_decode_protein logic)."""
 import importlib
+import json
+import gzip
+import io
 import pytest
 import pandas as pd
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import OUTPUT_COLS
+from scripts.lib.paths import DECODE_URLS
+from scripts.lib.decode_stream import parse_bulk_urls
 
 _decode_mod = importlib.import_module("scripts.02_cis_pqtl_extract.decode")
 read_decode_protein = _decode_mod.read_decode_protein
+
+# Columns the rename dict in read_decode_protein maps FROM (must exist in real files).
+_EXPECTED_SOURCE_COLS = {"Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE"}
 
 
 @pytest.fixture
@@ -21,11 +29,11 @@ def sample_protein():
     )
 
 
-def _fake_rows(n: int = 3) -> list[dict]:
-    return [
+def _fake_df(n: int = 3) -> pd.DataFrame:
+    rows = [
         {
             "Chrom": "chr22",
-            "Pos(hg38)": str(25_212_564 + i * 1000),
+            "Pos": str(25_212_564 + i * 1000),
             "Name": f"22:25212564+{i}:A:G",
             "rsids": f"rs{100 + i}",
             "effectAllele": "A",
@@ -37,17 +45,21 @@ def _fake_rows(n: int = 3) -> list[dict]:
         }
         for i in range(n)
     ]
+    return pd.DataFrame(rows)
+
+
+def _fake_rows(n: int = 3) -> list[dict]:
+    return _fake_df(n).to_dict("records")
 
 
 class TestReadDecodeProtein:
     def test_returns_dataframe_with_expected_cols(self, sample_protein):
-        rows = _fake_rows(3)
-        eaf_dict = {r["Name"]: 0.30 for r in rows}
+        df = _fake_df(3)
+        eaf_dict = {f"22:25212564+{i}:A:G": 0.30 for i in range(3)}
 
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=rows):
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
             result = read_decode_protein(sample_protein, eaf_dict)
 
         assert result is not None
@@ -55,25 +67,23 @@ class TestReadDecodeProtein:
             assert col in result.columns, f"missing column: {col}"
 
     def test_chrom_has_no_chr_prefix(self, sample_protein):
-        rows = _fake_rows(1)
-        eaf_dict = {r["Name"]: 0.30 for r in rows}
+        df = _fake_df(1)
+        eaf_dict = {"22:25212564+0:A:G": 0.30}
 
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=rows):
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
             result = read_decode_protein(sample_protein, eaf_dict)
 
         assert not result["chrom"].str.startswith("chr").any()
 
     def test_missing_eaf_rows_dropped_and_logged(self, sample_protein, caplog):
-        rows = _fake_rows(3)
-        eaf_dict = {}  # none in cache → all dropped
+        df = _fake_df(3)
+        eaf_dict = {}
 
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=rows), \
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df), \
              caplog.at_level("INFO", logger="02_decode"):
             result = read_decode_protein(sample_protein, eaf_dict)
 
@@ -81,35 +91,33 @@ class TestReadDecodeProtein:
         assert "EAF lookup" in caplog.text or result is None
 
     def test_partial_eaf_cache_some_rows_kept(self, sample_protein):
-        rows = _fake_rows(3)
-        eaf_dict = {rows[0]["Name"]: 0.30}
+        df = _fake_df(3)
+        eaf_dict = {"22:25212564+0:A:G": 0.30}
 
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=rows):
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
             result = read_decode_protein(sample_protein, eaf_dict)
 
         assert result is not None
         assert len(result) == 1
 
-    def test_missing_url_returns_none(self, sample_protein):
-        with patch.object(_decode_mod, "_url_map", {}):
+    def test_missing_key_in_s3_map_returns_none(self, sample_protein):
+        with patch.object(_decode_mod, "_s3_key_map", {}):
             result = read_decode_protein(sample_protein, {})
         assert result is None
 
-    def test_empty_row_list_returns_none(self, sample_protein):
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=[]):
+    def test_empty_dataframe_returns_none(self, sample_protein):
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=None):
             result = read_decode_protein(sample_protein, {})
         assert result is None
 
     def test_n_fills_with_default_when_column_missing(self, sample_protein):
         rows = [
             {
-                "Chrom": "chr22", "Pos(hg38)": "25212564",
+                "Chrom": "chr22", "Pos": "25212564",
                 "Name": "22:25212564:A:G",
                 "rsids": "rs100",
                 "effectAllele": "A", "otherAllele": "G",
@@ -117,13 +125,331 @@ class TestReadDecodeProtein:
                 # No "N" column
             }
         ]
+        df = pd.DataFrame(rows)
         eaf_dict = {"22:25212564:A:G": 0.30}
 
-        with patch.object(_decode_mod, "_url_map",
-                          {sample_protein.seqid: "http://fake"}), \
-             patch.object(_decode_mod, "iter_decode_rows",
-                          return_value=rows):
+        with patch.object(_decode_mod, "_s3_key_map",
+                          {sample_protein.seqid: "fake/key"}), \
+             patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
             result = read_decode_protein(sample_protein, eaf_dict)
 
         assert result is not None
-        assert result["N"].iloc[0] == 35_000  # default N
+        assert result["N"].iloc[0] == 35_000
+
+
+# ---------------------------------------------------------------------------
+# _build_s3_key_index
+# ---------------------------------------------------------------------------
+
+class TestBuildS3KeyIndex:
+    """Tests for _build_s3_key_index — the one-time S3 listing that maps
+    core_name → full S3 key, with a JSON disk cache."""
+
+    def _invoke(self, prefix, pattern, tmp_path, mock_s3_index=None):
+        """Call _build_s3_key_index with COHORT pointing at tmp_path."""
+        cohort = "deCODE_test"
+        (tmp_path / cohort).mkdir(parents=True, exist_ok=True)
+        with patch.object(_decode_mod, "COHORT", cohort), \
+             patch.object(_decode_mod, "cohort_dir", lambda c: tmp_path / c), \
+             patch.object(_decode_mod, "_get_s3_client", return_value=mock_s3_index):
+            return _decode_mod._build_s3_key_index(prefix, pattern)
+
+    def _make_paginator(self, keys: list[str]) -> MagicMock:
+        """Mock paginator that returns all keys in a single page."""
+        page = {"Contents": [{"Key": k} for k in keys]}
+        pager = MagicMock()
+        pager.paginate.return_value = [page]
+        s3 = MagicMock()
+        s3.get_paginator.return_value = pager
+        return s3
+
+    def test_loads_from_cache_without_hitting_s3(self, tmp_path):
+        cache_dir = tmp_path / "deCODE_test"
+        cache_dir.mkdir()
+        cached = {"10000_28_CRYBB2_CRBB2": "final_somascan_raw/Proteomics_PC0_10000_28_CRYBB2_CRBB2_07082019.txt.gz"}
+        (cache_dir / "_s3_key_index.json").write_text(json.dumps(cached))
+
+        mock_s3 = MagicMock()
+        result = self._invoke("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, mock_s3)
+
+        assert result == cached
+        mock_s3.get_paginator.assert_not_called()
+
+    def test_builds_index_from_s3_listing(self, tmp_path):
+        keys = [
+            "final_somascan_raw/Proteomics_PC0_10000_28_CRYBB2_CRBB2_07082019.txt.gz",
+            "final_somascan_raw/Proteomics_PC0_10001_7_RAF1_c_Raf_07082019.txt.gz",
+        ]
+        s3 = self._make_paginator(keys)
+        result = self._invoke("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+
+        assert result["10000_28_CRYBB2_CRBB2"] == keys[0]
+        assert result["10001_7_RAF1_c_Raf"] == keys[1]
+
+    def test_non_matching_keys_excluded(self, tmp_path):
+        keys = [
+            "final_somascan_raw/Proteomics_PC0_GENE_07082019.txt.gz",
+            "final_somascan_raw/README.txt",
+            "final_somascan_raw/Proteomics_SMP_GENE_07082019.txt.gz",  # wrong prefix
+        ]
+        s3 = self._make_paginator(keys)
+        result = self._invoke("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+
+        assert "GENE" in result
+        assert len(result) == 1  # README and SMP file excluded
+
+    def test_cache_written_after_s3_build(self, tmp_path):
+        keys = ["final_somascan_raw/Proteomics_PC0_MYGENE_20230101.txt.gz"]
+        s3 = self._make_paginator(keys)
+        self._invoke("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+
+        cache_file = tmp_path / "deCODE_test" / "_s3_key_index.json"
+        assert cache_file.exists()
+        on_disk = json.loads(cache_file.read_text())
+        assert "MYGENE" in on_disk
+
+    def test_empty_bucket_prefix_returns_empty_dict(self, tmp_path):
+        s3 = self._make_paginator([])
+        result = self._invoke("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+        assert result == {}
+
+    def test_paginator_called_with_correct_bucket_and_prefix(self, tmp_path):
+        s3 = self._make_paginator([])
+        self._invoke("my_prefix", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+        s3.get_paginator.assert_called_once_with("list_objects_v2")
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket=_decode_mod._S3_BUCKET, Prefix="my_prefix/"
+        )
+
+    def test_smp_pattern_extracts_correct_core(self, tmp_path):
+        keys = ["final_somascan_smp/Proteomics_SMP_PC0_10000_28_CRYBB2_CRBB2_07082019.txt.gz"]
+        s3 = self._make_paginator(keys)
+        result = self._invoke("final_somascan_smp", r"Proteomics_SMP_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+        assert "10000_28_CRYBB2_CRBB2" in result
+
+    def test_multiple_pages_all_indexed(self, tmp_path):
+        page1 = {"Contents": [{"Key": "pfx/Proteomics_PC0_GENE_A_20230101.txt.gz"}]}
+        page2 = {"Contents": [{"Key": "pfx/Proteomics_PC0_GENE_B_20230101.txt.gz"}]}
+        pager = MagicMock()
+        pager.paginate.return_value = [page1, page2]
+        s3 = MagicMock()
+        s3.get_paginator.return_value = pager
+        result = self._invoke("pfx", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz", tmp_path, s3)
+        assert "GENE_A" in result and "GENE_B" in result
+
+
+# ---------------------------------------------------------------------------
+# _get_s3_client caching
+# ---------------------------------------------------------------------------
+
+class TestGetS3Client:
+    def test_returns_boto3_client(self):
+        import scripts.lib.decode_stream as ds
+        original = ds._S3_CLIENT
+        try:
+            ds._S3_CLIENT = None
+            with patch("boto3.client") as mock_boto:
+                mock_boto.return_value = MagicMock()
+                from scripts.lib.decode_stream import _get_s3_client
+                client = _get_s3_client("https://ep", "key", "secret")
+                mock_boto.assert_called_once_with(
+                    "s3",
+                    endpoint_url="https://ep",
+                    aws_access_key_id="key",
+                    aws_secret_access_key="secret",
+                    region_name="us-east-1",
+                )
+                assert client is mock_boto.return_value
+        finally:
+            ds._S3_CLIENT = original
+
+    def test_second_call_returns_cached_instance(self):
+        import scripts.lib.decode_stream as ds
+        original = ds._S3_CLIENT
+        try:
+            ds._S3_CLIENT = None
+            with patch("boto3.client") as mock_boto:
+                mock_boto.return_value = MagicMock()
+                from scripts.lib.decode_stream import _get_s3_client
+                c1 = _get_s3_client("https://ep", "key", "secret")
+                c2 = _get_s3_client("https://ep", "key", "secret")
+                assert c1 is c2
+                assert mock_boto.call_count == 1
+        finally:
+            ds._S3_CLIENT = original
+
+
+@pytest.mark.network
+def test_decode_file_columns_match_rename_dict():
+    """Contract test: stream the header from a real deCODE file and assert
+    every column the rename dict depends on is actually present."""
+    import httpx
+
+    urls = parse_bulk_urls(DECODE_URLS)
+    assert urls, "bulk_urls.txt is empty or missing"
+    _, url = urls[0]
+
+    with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
+        resp.raise_for_status()
+        chunks = []
+        for chunk in resp.iter_bytes(chunk_size=65536):
+            chunks.append(chunk)
+            if sum(len(c) for c in chunks) >= 65536:
+                break
+
+    raw = b"".join(chunks)
+    with gzip.open(io.BytesIO(raw)) as fh:
+        actual_cols = set(fh.readline().decode().strip().split("\t"))
+
+    missing = _EXPECTED_SOURCE_COLS - actual_cols
+    assert not missing, (
+        f"deCODE file format changed — columns missing from real file: {missing}. "
+        f"Actual columns: {actual_cols}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real S3 integration tests
+# ---------------------------------------------------------------------------
+
+_S3_ENDPOINT   = _decode_mod._S3_ENDPOINT
+_S3_BUCKET     = _decode_mod._S3_BUCKET
+_S3_ACCESS_KEY = _decode_mod._S3_ACCESS_KEY
+_S3_SECRET_KEY = _decode_mod._S3_SECRET_KEY
+
+# Well-known protein on chr1 (near start of file → fast early abort)
+_S3_TEST_PROTEIN  = "10015_119_KCNAB2_KCAB2"
+_S3_TEST_CHROM    = "1"
+_S3_TEST_TSS      = 5_990_927
+_S3_TEST_WINDOW   = 500_000
+_S3_RAW_KEY       = "final_somascan_raw/Proteomics_PC0_10015_119_KCNAB2_KCAB2_07082019.txt.gz"
+_S3_SMP_KEY       = "final_somascan_smp/Proteomics_SMP_PC0_10015_119_KCNAB2_KCAB2_10032022.txt.gz"
+_STREAM_USECOLS   = frozenset(["Chrom", "Pos", "Name", "Beta", "Pval", "SE", "N"])
+
+
+@pytest.fixture(scope="module")
+def real_s3():
+    from scripts.lib.decode_stream import _get_s3_client
+    import scripts.lib.decode_stream as ds
+    orig = ds._S3_CLIENT
+    ds._S3_CLIENT = None
+    client = _get_s3_client(_S3_ENDPOINT, _S3_ACCESS_KEY, _S3_SECRET_KEY)
+    yield client
+    ds._S3_CLIENT = orig
+
+
+@pytest.mark.network
+class TestStreamS3CisRowsRealData:
+    """Integration tests against the real deCODE S3 bucket."""
+
+    def test_raw_returns_nonempty_rows(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        assert len(rows) > 100, f"Expected >100 cis rows, got {len(rows)}"
+
+    def test_raw_all_rows_on_target_chrom(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        chroms = {r["Chrom"].lstrip("chr") for r in rows}
+        assert chroms == {_S3_TEST_CHROM}, f"Unexpected chroms: {chroms}"
+
+    def test_raw_all_rows_within_window(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        low  = _S3_TEST_TSS - _S3_TEST_WINDOW
+        high = _S3_TEST_TSS + _S3_TEST_WINDOW
+        for r in rows:
+            pos = int(r["Pos"])
+            assert low <= pos <= high, f"Row at pos {pos} outside [{low}, {high}]"
+
+    def test_raw_rows_have_expected_columns(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        assert rows
+        assert set(rows[0].keys()) == _STREAM_USECOLS
+
+    def test_raw_numeric_fields_parseable(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        import math
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        for r in rows[:20]:
+            assert not math.isnan(float(r["Beta"]))
+            assert 0 < float(r["Pval"]) <= 1
+            assert float(r["SE"]) > 0
+            assert int(r["N"]) > 0
+
+    def test_smp_returns_nonempty_rows(self, real_s3):
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        rows = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_SMP_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        assert len(rows) > 100
+
+    def test_raw_and_smp_share_same_variants(self, real_s3):
+        """Both normalizations cover the same genomic window."""
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        raw = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        smp = list(stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_SMP_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        ))
+        raw_names = {r["Name"] for r in raw}
+        smp_names = {r["Name"] for r in smp}
+        # Overlap should be very high (same variants, different normalization)
+        overlap = len(raw_names & smp_names) / max(len(raw_names), len(smp_names))
+        assert overlap > 0.95, f"raw/smp variant overlap only {overlap:.1%}"
+
+    def test_raw_and_smp_betas_differ(self, real_s3):
+        """SMP normalization changes Beta values — confirms we're reading different files."""
+        from scripts.lib.decode_stream import stream_s3_cis_rows
+        raw = {r["Name"]: float(r["Beta"]) for r in stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_RAW_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        )}
+        smp = {r["Name"]: float(r["Beta"]) for r in stream_s3_cis_rows(
+            real_s3, _S3_BUCKET, _S3_SMP_KEY,
+            _S3_TEST_CHROM, _S3_TEST_TSS, _S3_TEST_WINDOW, _STREAM_USECOLS,
+        )}
+        common = set(raw) & set(smp)
+        n_differ = sum(1 for k in common if abs(raw[k] - smp[k]) > 1e-6)
+        assert n_differ > len(common) * 0.5, "Expected majority of Betas to differ between raw and SMP"
+
+    def test_s3_key_index_lists_expected_protein(self, real_s3, tmp_path):
+        """Live S3 listing contains the test protein in both raw and SMP prefixes."""
+        import re
+        for prefix, pat in [
+            ("final_somascan_raw", r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz"),
+            ("final_somascan_smp", r"Proteomics_SMP_PC0_(.+)_\d{8}\.txt\.gz"),
+        ]:
+            regex = re.compile(pat)
+            found = False
+            for page in real_s3.get_paginator("list_objects_v2").paginate(
+                Bucket=_S3_BUCKET, Prefix=f"{prefix}/"
+            ):
+                for obj in page.get("Contents", []):
+                    m = regex.match(obj["Key"].split("/")[-1])
+                    if m and m.group(1) == _S3_TEST_PROTEIN:
+                        found = True
+                        break
+                if found:
+                    break
+            assert found, f"{_S3_TEST_PROTEIN} not found in s3://{_S3_BUCKET}/{prefix}/"

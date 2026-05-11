@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
 02_cis_pqtl_extract/decode.py
-Extract cis-pQTLs from deCODE per-aptamer .txt.gz files via signed HTTP URLs.
+Extract cis-pQTLs from deCODE per-aptamer .txt.gz files via S3 streaming.
 
-Downloads sequentially (deCODE throttles parallel connections).
+Files are streamed from s3-ext.decode.is:10443 with early abort once the
+cis window on the target chromosome is passed — avoiding ~99% of bytes.
+
+Supports threaded extraction workers; tune with --workers.
 Caches EAF from assocvariants.annotated.txt.gz on first run.
 
 Usage:
-  python scripts/02_cis_pqtl_extract/decode.py [--limit N]
+  python scripts/02_cis_pqtl_extract/decode.py [--normalization raw|smp] [--limit N] [--workers N]
 """
 import argparse
 import gzip
-import io
+import json
+import re
 import logging
 
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
 from scripts.lib.config import add_config_arg, load_config, get_section
-from scripts.lib.decode_stream import iter_decode_rows, parse_bulk_urls
+from scripts.lib.decode_stream import _get_s3_client, stream_s3_cis_rows, parse_bulk_urls
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import DECODE_ANNOTATED, DECODE_URLS, cohort_dir
 from scripts.lib.progress import bar
@@ -27,8 +31,38 @@ from scripts.lib.cis_extract import run_extraction
 
 log = setup_logger("02_decode")
 
-COHORT = "deCODE"
 BUILD = "hg38"
+_DEFAULT_N = 35_000
+_REQUIRED_COLS = {
+    "Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE", "N",
+}
+_FAST_PARSER_COLS = frozenset(_REQUIRED_COLS)
+_prefilter_window_bp = 500_000
+_prefilter_pval = 5e-8
+
+_S3_ENDPOINT   = "https://s3-ext.decode.is:10443"
+_S3_BUCKET     = "largescaleplasma-2023"
+_S3_ACCESS_KEY = "SE0AV795UKCQ338YKWP4"
+_S3_SECRET_KEY = "/mkkvYtFJkO+NAhxcm3OhNKAdvwQivhbdQRLeJ/c"
+
+_NORM_CONFIG = {
+    "raw": {
+        "prefix":  "final_somascan_raw",
+        "pattern": r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz",
+        "cohort":  "deCODE",
+    },
+    "smp": {
+        "prefix":  "final_somascan_smp",
+        "pattern": r"Proteomics_SMP_PC0_(.+)_\d{8}\.txt\.gz",
+        "cohort":  "deCODE_smp",
+    },
+}
+
+# Set in main() based on --normalization
+COHORT = "deCODE"
+
+# Populated at startup by _build_s3_key_index; maps core_name → full S3 key
+_s3_key_map: dict[str, str] = {}
 
 
 def load_eaf_dict() -> dict[str, float]:
@@ -61,6 +95,38 @@ def load_eaf_dict() -> dict[str, float]:
     return eaf
 
 
+def _build_s3_key_index(prefix: str, pattern: str) -> dict[str, str]:
+    """Build a {core_name: full_s3_key} index by listing the S3 prefix.
+
+    Result is cached to disk so subsequent runs skip the listing.
+    """
+    cache_path = cohort_dir(COHORT) / "_s3_key_index.json"
+    if cache_path.exists():
+        with open(cache_path) as fh:
+            return json.load(fh)
+
+    log.info(f"Building S3 key index for s3://{_S3_BUCKET}/{prefix}/ ...")
+    s3 = _get_s3_client(_S3_ENDPOINT, _S3_ACCESS_KEY, _S3_SECRET_KEY)
+    regex = re.compile(pattern)
+    index: dict[str, str] = {}
+
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=f"{prefix}/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            fname = key.split("/")[-1]
+            m = regex.match(fname)
+            if m:
+                core = m.group(1)
+                index[core] = key
+
+    log.info(f"S3 key index: {len(index):,} proteins")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w") as fh:
+        json.dump(index, fh)
+    return index
+
+
 def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
     """
     Convert (protein_name, url) list to ProteinMeta objects.
@@ -68,13 +134,20 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
     TSS fetched from Ensembl hg38 REST (cached via @lru_cache).
     """
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg38.tsv"
-    # Load existing cache
+    # All deCODE cohorts use identical genes; share the raw-cohort TSS cache when
+    # the cohort-specific file doesn't exist yet (avoids ~20 min Ensembl re-lookup).
+    _tss_seed = cohort_dir("deCODE") / "_tss_hg38.tsv"
+    if not tss_cache_path.exists() and _tss_seed.exists() and _tss_seed != tss_cache_path:
+        import shutil
+        tss_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(_tss_seed, tss_cache_path)
+        log.info(f"Seeded TSS cache from deCODE → {tss_cache_path}")
     tss_cache: dict[str, tuple[str, int]] = {}
     if tss_cache_path.exists():
         df = pd.read_csv(tss_cache_path, sep="\t", dtype=str)
-        for _, row in df.iterrows():
+        for row in df.itertuples(index=False):
             try:
-                tss_cache[row["gene"]] = (row["chrom"], int(row["tss"]))
+                tss_cache[str(row.gene)] = (str(row.chrom), int(row.tss))
             except (ValueError, KeyError):
                 pass
 
@@ -85,8 +158,6 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
         parts = protein_name.split("_")
         if len(parts) < 3:
             continue
-        # Gene is the 3rd component (index 2)
-        seqid_base = "_".join(parts[:2])
         gene = parts[2]
         seqid = protein_name
 
@@ -105,7 +176,6 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
             chrom=str(chrom), tss=tss, build=BUILD, source_cohort=COHORT,
         ))
 
-    # Persist any new TSS lookups
     if new_cache_rows:
         existing = pd.read_csv(tss_cache_path, sep="\t") if tss_cache_path.exists() else pd.DataFrame()
         updated = pd.concat([existing, pd.DataFrame(new_cache_rows)], ignore_index=True)
@@ -114,24 +184,32 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
     return proteins
 
 
-# Map protein_name → URL for use in read_fn
-_url_map: dict[str, str] = {}
+def _load_decode_raw_df(protein: ProteinMeta) -> pd.DataFrame | None:
+    """Stream cis-window rows for one protein from S3."""
+    key = _s3_key_map.get(protein.seqid)
+    if not key:
+        log.warning(f"{protein.seqid}: no S3 key found in index — skipping")
+        return None
+
+    s3 = _get_s3_client(_S3_ENDPOINT, _S3_ACCESS_KEY, _S3_SECRET_KEY)
+    rows = list(stream_s3_cis_rows(
+        s3, _S3_BUCKET, key,
+        protein.chrom, protein.tss,
+        _prefilter_window_bp, _FAST_PARSER_COLS,
+    ))
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.DataFrame | None:
-    url = _url_map.get(protein.seqid)
-    if not url:
+    df = _load_decode_raw_df(protein)
+    if df is None:
         return None
 
-    rows = list(iter_decode_rows(url))
-    if not rows:
-        return None
-
-    df = pd.DataFrame(rows)
-    # deCODE columns: Chrom, Pos(hg38), Name, rsids, effectAllele, otherAllele, Beta, Pval, SE, N, ImpMAF
     df = df.rename(columns={
         "Chrom": "chrom",
-        "Pos(hg38)": "pos",
+        "Pos": "pos",
         "rsids": "rsid",
         "effectAllele": "EA",
         "otherAllele": "OA",
@@ -142,18 +220,28 @@ def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.
         "Name": "variant_name",
     })
     df["chrom"] = df["chrom"].astype(str).str.lstrip("chr")
-    df["pos"] = pd.to_numeric(df["pos"], errors="coerce").astype("Int64")
+    df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
     df["beta"] = pd.to_numeric(df["beta"], errors="coerce")
     df["se"] = pd.to_numeric(df["se"], errors="coerce")
     df["pval"] = pd.to_numeric(df["pval"], errors="coerce")
+
+    in_cis = df["chrom"].eq(str(protein.chrom)) & (df["pos"] - protein.tss).abs().le(_prefilter_window_bp)
+    gw_sig = df["pval"] < _prefilter_pval
+    df = df[in_cis & gw_sig]
+    if df.empty:
+        return None
+
     if "N" in df.columns:
-        df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(35_000).astype(int)
+        df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(_DEFAULT_N).astype(int)
     else:
-        df["N"] = 35_000
+        df["N"] = _DEFAULT_N
 
     n_in = len(df)
     df["EAF"] = df["variant_name"].map(eaf_dict)
     df = df.dropna(subset=["EAF", "pos", "pval", "beta", "se"])
+    if df.empty:
+        return None
+    df["pos"] = df["pos"].astype(int)
     n_missing_eaf = n_in - len(df)
     if n_missing_eaf:
         pct = 100 * n_missing_eaf / n_in if n_in else 0
@@ -167,27 +255,45 @@ def read_decode_protein(protein: ProteinMeta, eaf_dict: dict[str, float]) -> pd.
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract deCODE cis-pQTLs")
+    parser.add_argument("--normalization", choices=["raw", "smp"], default="raw",
+                        help="Which deCODE normalization to use (default: raw)")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Thread workers for per-protein downloads (default: 4)")
     add_config_arg(parser)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    workers = max(1, args.workers)
+
+    norm_cfg = _NORM_CONFIG[args.normalization]
 
     with RunManifest("02_cis_pqtl_extract/decode.py") as manifest:
-        global _url_map
-        urls = parse_bulk_urls(DECODE_URLS)
-        _url_map = {name: url for name, url in urls}
+        global COHORT, _s3_key_map, _prefilter_pval, _prefilter_window_bp
+        COHORT = norm_cfg["cohort"]
+        _prefilter_pval = float(cis_cfg["pval_gw"])
+        _prefilter_window_bp = int(cis_cfg["window_kb"]) * 1_000
 
+        _s3_key_map = _build_s3_key_index(norm_cfg["prefix"], norm_cfg["pattern"])
+
+        urls = parse_bulk_urls(DECODE_URLS)
         eaf_dict = load_eaf_dict()
         proteins = build_protein_list(urls)
 
-        log.info(f"deCODE: {len(proteins)} proteins")
+        log.info(f"{COHORT}: {len(proteins)} proteins")
 
         def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
             return read_decode_protein(protein, eaf_dict)
 
-        n = run_extraction(COHORT, proteins, read_fn, limit=args.limit, cfg=cis_cfg)
+        n = run_extraction(
+            COHORT,
+            proteins,
+            read_fn,
+            workers=workers,
+            limit=args.limit,
+            cfg=cis_cfg,
+        )
         manifest.n_units = n
 
 

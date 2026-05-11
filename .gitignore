@@ -14,3 +14,5 @@ processed_data/
 
 logs/
 tools/
+bench_decode_*/
+plink2.log
