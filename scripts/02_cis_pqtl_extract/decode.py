@@ -19,6 +19,7 @@ import argparse
 import json
 import re
 import logging
+import time
 
 import pandas as pd
 
@@ -158,22 +159,37 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
     return proteins
 
 
+_S3_MAX_RETRIES = 5
+_S3_RETRY_BASE  = 10.0  # seconds; doubles each attempt (10, 20, 40, 80, 160)
+
+
 def _load_decode_raw_df(protein: ProteinMeta) -> pd.DataFrame | None:
-    """Stream cis-window rows for one protein from S3."""
+    """Stream cis-window rows for one protein from S3, with retries on transient errors."""
     key = _s3_key_map.get(protein.seqid)
     if not key:
         log.warning(f"{protein.seqid}: no S3 key found in index — skipping")
         return None
 
     s3 = _get_s3_client(_S3_ENDPOINT, _S3_ACCESS_KEY, _S3_SECRET_KEY)
-    rows = list(stream_s3_cis_rows(
-        s3, _S3_BUCKET, key,
-        protein.chrom, protein.tss,
-        _prefilter_window_bp, _FAST_PARSER_COLS,
-    ))
-    if not rows:
-        return None
-    return pd.DataFrame(rows)
+    last_exc: Exception | None = None
+    for attempt in range(1, _S3_MAX_RETRIES + 1):
+        try:
+            rows = list(stream_s3_cis_rows(
+                s3, _S3_BUCKET, key,
+                protein.chrom, protein.tss,
+                _prefilter_window_bp, _FAST_PARSER_COLS,
+            ))
+            return pd.DataFrame(rows) if rows else None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _S3_MAX_RETRIES:
+                wait = _S3_RETRY_BASE * (2 ** (attempt - 1))
+                log.warning(
+                    f"{protein.seqid}: S3 attempt {attempt}/{_S3_MAX_RETRIES} failed "
+                    f"({type(exc).__name__}), retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+    raise last_exc
 
 
 def read_decode_protein(protein: ProteinMeta) -> pd.DataFrame | None:

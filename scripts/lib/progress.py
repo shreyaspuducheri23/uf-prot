@@ -8,6 +8,7 @@ _BAR_FMT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}
 
 
 def bar(iterable: Iterable[T], desc: str, total: int | None = None, **kw) -> Iterable[T]:
+    kw.setdefault("smoothing", 0.05)
     return _tqdm(iterable, desc=desc, total=total, bar_format=_BAR_FMT,
                  dynamic_ncols=True, **kw)
 
