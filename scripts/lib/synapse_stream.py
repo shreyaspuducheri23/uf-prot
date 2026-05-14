@@ -85,7 +85,7 @@ def stream_ukbppp_protein(entity_id: str,
     tar_path = download_entity(entity_id, tmp_dir)
     try:
         matched: list[dict] = []
-        for _member, row in iter_tar_gz_rows(tar_path):
+        for _member, row in iter_tar_gz_rows(tar_path, sep=" "):
             try:
                 parts = row.get("ID", "").split(":")
                 if len(parts) < 2:
