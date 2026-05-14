@@ -100,15 +100,25 @@ def read_fenland_protein(protein: ProteinMeta, entity_map: dict,
         return None
 
     df = pd.DataFrame(all_rows)
-    # Fenland columns probed at runtime — expected: CHR, POS, SNPID/rsid, EA, OA, EAF, BETA, SE, P, N
+    # Actual Fenland METAL meta-analysis format:
+    # chr, pos, rsid, Allele1, Allele2, Freq1, Effect, StdErr, Pvalue, TotalSampleSize
+    # Legacy format (kept as fallbacks): CHR, POS, EA, OA, EAF, BETA, SE, P, N
     rename = {}
-    col_map = {"CHR": "chrom", "POS": "pos", "EA": "EA", "OA": "OA",
-               "EAF": "EAF", "BETA": "beta", "SE": "se", "P": "pval", "N": "N"}
+    col_map = {
+        "chr": "chrom", "CHR": "chrom",
+        "pos": "pos",   "POS": "pos",
+        "Allele1": "EA", "EA": "EA",
+        "Allele2": "OA", "OA": "OA",
+        "Freq1": "EAF",  "EAF": "EAF",
+        "Effect": "beta", "BETA": "beta",
+        "StdErr": "se",   "SE": "se",
+        "Pvalue": "pval", "P": "pval",
+        "TotalSampleSize": "N", "N": "N",
+    }
     for src, dst in col_map.items():
-        if src in df.columns:
+        if src in df.columns and dst not in rename.values():
             rename[src] = dst
-    # Try alternative names
-    for alt, dst in [("SNPID", "rsid"), ("rsid", "rsid"), ("SNP", "rsid")]:
+    for alt in ["rsid", "SNPID", "SNP"]:
         if alt in df.columns and "rsid" not in rename.values():
             rename[alt] = "rsid"
     df = df.rename(columns=rename)
@@ -121,6 +131,10 @@ def read_fenland_protein(protein: ProteinMeta, entity_map: dict,
     df["se"] = pd.to_numeric(df["se"], errors="coerce")
     df["pval"] = pd.to_numeric(df["pval"], errors="coerce")
     df["EAF"] = pd.to_numeric(df["EAF"], errors="coerce")
+    # Alleles in real files are lowercase — normalize to uppercase
+    for col in ("EA", "OA"):
+        if col in df.columns:
+            df[col] = df[col].str.upper()
     if "N" in df.columns:
         df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(FENLAND_N).astype(int)
     else:

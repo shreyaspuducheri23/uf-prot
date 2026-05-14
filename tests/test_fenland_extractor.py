@@ -145,3 +145,71 @@ class TestReadFenlandProtein:
             result = read_fenland_protein(sample_protein, entity_map, 25_000_000, 25_700_000)
 
         assert result["N"].iloc[0] == 10_708
+
+
+# ── Real-data integration test ────────────────────────────────────────────────
+# Downloads one Fenland file from Synapse and exercises the full parsing path.
+# Cached in tests/_fenland_cache/ after first run; skipped if Synapse unavailable.
+
+_CACHE_DIR = Path(__file__).parent / "_fenland_cache"
+_ABL1_ENTITY   = "syn52965334"   # ABL1_3341_33.txt.gz
+_ABL1_FILENAME = "ABL1_3341_33.txt.gz"
+_ABL1_GENE     = "ABL1"
+_ABL1_CHROM    = "9"
+_ABL1_TSS      = 133_589_333
+_CIS_WINDOW_KB = 500
+
+
+def _synapse_available() -> bool:
+    try:
+        import synapseclient
+        syn = synapseclient.Synapse()
+        syn.login(silent=True)
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _synapse_available(), reason="Synapse credentials not available")
+class TestStreamFenlandRealDownload:
+    """Parses a real Fenland file to catch format regressions (gzip vs plaintext, column names)."""
+
+    @pytest.fixture(scope="class")
+    def cached_file(self):
+        import shutil
+        _CACHE_DIR.mkdir(exist_ok=True)
+        cached = _CACHE_DIR / _ABL1_FILENAME
+        if not cached.exists():
+            from scripts.lib.synapse_stream import download_entity
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                path = download_entity(_ABL1_ENTITY, Path(tmp))
+                shutil.copy(path, cached)
+        return cached
+
+    def _stream(self, cached_file: Path) -> list[dict]:
+        import shutil, tempfile
+        from scripts.lib.synapse_stream import stream_fenland_protein
+        from scripts.lib.cis import cis_window_bounds
+        from unittest.mock import patch
+        start, end = cis_window_bounds(_ABL1_TSS, kb=_CIS_WINDOW_KB)
+        with tempfile.TemporaryDirectory() as tmp:
+            file_copy = Path(tmp) / cached_file.name
+            shutil.copy(cached_file, file_copy)
+            with patch("scripts.lib.synapse_stream.download_entity", return_value=file_copy):
+                return stream_fenland_protein(_ABL1_ENTITY, _ABL1_CHROM, start, end, Path(tmp))
+
+    def test_returns_nonempty_rows_in_cis_window(self, cached_file):
+        rows = self._stream(cached_file)
+        assert len(rows) > 0, "Expected cis-window rows for ABL1 but got none"
+
+    def test_expected_columns_present(self, cached_file):
+        rows = self._stream(cached_file)
+        assert rows
+        # Actual METAL meta-analysis format used by Fenland
+        expected = {"chr", "pos", "rsid", "Allele1", "Allele2", "Freq1",
+                    "Effect", "StdErr", "Pvalue", "TotalSampleSize"}
+        actual = set(rows[0].keys())
+        missing = expected - actual
+        assert not missing, f"Columns missing from real Fenland file: {missing}. Got: {actual}"

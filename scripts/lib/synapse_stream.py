@@ -112,7 +112,7 @@ def stream_fenland_protein(entity_id: str,
     gz_path = download_entity(entity_id, tmp_dir)
     try:
         matched: list[dict] = []
-        is_gzip = gz_path.read_bytes(2) == b'\x1f\x8b'
+        is_gzip = gz_path.open("rb").read(2) == b'\x1f\x8b'
         opener = gzip.open(gz_path, "rt") if is_gzip else open(gz_path, "rt", encoding="utf-8")
         with opener as fh:
             header = fh.readline().strip().split("\t")
@@ -120,8 +120,8 @@ def stream_fenland_protein(entity_id: str,
                 parts = line.strip().split("\t")
                 row = dict(zip(header, parts))
                 try:
-                    chrom = str(row.get("CHR", "")).lstrip("chr")
-                    pos = int(row.get("POS", 0))
+                    chrom = str(row.get("chr", row.get("CHR", ""))).lstrip("chr")
+                    pos = int(row.get("pos", row.get("POS", 0)))
                 except ValueError:
                     continue
                 if chrom == cis_chrom and cis_start <= pos <= cis_end:
