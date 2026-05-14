@@ -112,7 +112,9 @@ def stream_fenland_protein(entity_id: str,
     gz_path = download_entity(entity_id, tmp_dir)
     try:
         matched: list[dict] = []
-        with gzip.open(gz_path, "rt") as fh:
+        is_gzip = gz_path.read_bytes(2) == b'\x1f\x8b'
+        opener = gzip.open(gz_path, "rt") if is_gzip else open(gz_path, "rt", encoding="utf-8")
+        with opener as fh:
             header = fh.readline().strip().split("\t")
             for line in fh:
                 parts = line.strip().split("\t")
