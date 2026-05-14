@@ -89,35 +89,35 @@ class TestReportCohort:
         cdir = tmp_path / "deCODE"
         cdir.mkdir()
         _make_index(cdir, 100)
-        # 10/100 = 10% > 5% threshold
+        # 10 not done (n_input - n_done = 100 - 90 = 10, 10% > 5%)
         _make_checkpoint(cdir, "_state_02.json",
-                         done=[f"SeqId_{i}" for i in range(90)],
-                         failed={f"SeqId_{i}": "err" for i in range(90, 100)})
+                         done=[f"SeqId_{i}" for i in range(90)], failed={})
         _make_tsv_files(cdir / "cis_sumstats", 80)
 
         _, warns = report_cohort("deCODE", processed_dir=tmp_path)
-        assert any("failures" in w for w in warns)
+        assert any("not done" in w for w in warns)
 
-    def test_warn_on_low_done_fraction(self, tmp_path):
+    def test_warn_on_silent_abandonment(self, tmp_path):
+        """Proteins absent from checkpoint entirely (pre-fix silent failures) are counted."""
         cdir = tmp_path / "deCODE"
         cdir.mkdir()
         _make_index(cdir, 100)
-        # only 50/100 done — below 90% threshold
+        # Only 50 marked done, none marked failed — 50 were silently abandoned
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(50)], failed={})
         _make_tsv_files(cdir / "cis_sumstats", 50)
 
-        _, warns = report_cohort("deCODE", processed_dir=tmp_path)
-        assert any("aborted" in w for w in warns)
+        rows, warns = report_cohort("deCODE", processed_dir=tmp_path)
+        assert rows[0]["n_failed"] == 50  # n_input(100) - n_done(50)
+        assert any("not done" in w for w in warns)
 
     def test_no_warn_when_thresholds_met(self, tmp_path):
         cdir = tmp_path / "deCODE"
         cdir.mkdir()
         _make_index(cdir, 100)
-        # 2/100 = 2% failed (below 5%), 98/100 done (above 90%)
+        # 98 done → n_failed = 2 (2% < 5%)
         _make_checkpoint(cdir, "_state_02.json",
-                         done=[f"SeqId_{i}" for i in range(98)],
-                         failed={f"SeqId_{i}": "err" for i in range(98, 100)})
+                         done=[f"SeqId_{i}" for i in range(98)], failed={})
         _make_tsv_files(cdir / "cis_sumstats", 96)
 
         _, warns = report_cohort("deCODE", processed_dir=tmp_path)

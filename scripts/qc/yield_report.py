@@ -23,7 +23,6 @@ STAGE_DEFS: list[tuple[str, str, str]] = [
 ]
 
 WARN_FAIL_FRAC = 0.05
-WARN_DONE_FRAC = 0.90
 
 
 def _count_tsv(d: Path) -> int:
@@ -81,7 +80,10 @@ def report_cohort(cohort: str, processed_dir: Path | None = None) -> tuple[list[
 
         out_dir = cdir / subfolder
         n_output = _count_tsv(out_dir)
-        n_done, n_failed = _read_checkpoint(cp_path)
+        n_done, _ = _read_checkpoint(cp_path)
+        # n_failed = anything not marked done: covers both explicit mark_failed entries
+        # and proteins silently abandoned by pre-fix runs (neither done nor failed in cp)
+        n_failed = max(0, n_input - n_done)
 
         pct_yield = (n_output / n_input * 100) if n_input > 0 else 0.0
         pct_failed = (n_failed / n_input * 100) if n_input > 0 else 0.0
@@ -101,13 +103,8 @@ def report_cohort(cohort: str, processed_dir: Path | None = None) -> tuple[list[
 
         if n_input > 0 and n_failed / n_input > WARN_FAIL_FRAC:
             warnings.append(
-                f"[WARN] {cohort}/{stage_name}: {n_failed}/{n_input} failures "
+                f"[WARN] {cohort}/{stage_name}: {n_failed}/{n_input} proteins not done "
                 f"({pct_failed:.1f}%) exceeds 5% threshold"
-            )
-        if n_input > 0 and n_done < n_input * WARN_DONE_FRAC:
-            warnings.append(
-                f"[WARN] {cohort}/{stage_name}: only {n_done}/{n_input} proteins attempted "
-                f"(checkpoint may reflect an aborted run)"
             )
 
         n_input = n_output
