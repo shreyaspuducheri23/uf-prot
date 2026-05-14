@@ -5,12 +5,13 @@
 # you left off. Pass --force to ignore step-level checkpoints and re-run all.
 #
 # Usage:
-#   bash run_pipeline.sh [--workers N] [--force] [--skip-step N[,N,...]]
+#   bash run_pipeline.sh [--workers N] [--force] [--skip-step N[,N,...]] [--strict]
 #
 # Options:
 #   --workers N        Parallel workers for UKB-PPP Synapse streaming (default: 4)
 #   --force            Re-run all steps even if already completed
 #   --skip-step N,...  Comma-separated step numbers to skip (e.g. --skip-step 2b,2c)
+#   --strict           Fail pipeline if yield-report detects suspicious yield drops
 
 set -euo pipefail
 
@@ -18,11 +19,13 @@ set -euo pipefail
 WORKERS=4
 FORCE=0
 SKIP_STEPS=()
+STRICT_FLAG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workers)  WORKERS="$2"; shift 2 ;;
     --force)    FORCE=1; shift ;;
+    --strict)   STRICT_FLAG="--strict"; shift ;;
     --skip-step)
       IFS=',' read -ra _skip <<< "$2"
       SKIP_STEPS+=("${_skip[@]}")
@@ -80,7 +83,7 @@ run_step() {
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 log "========================================================"
 log "Leiomyoma proteomics pipeline  |  $TIMESTAMP"
-log "workers=$WORKERS  force=$FORCE  skip=(${SKIP_STEPS[*]+"${SKIP_STEPS[*]}"})"
+log "workers=$WORKERS  force=$FORCE  strict=${STRICT_FLAG}  skip=(${SKIP_STEPS[*]+"${SKIP_STEPS[*]}"})"
 log "log → $PIPELINE_LOG"
 log "========================================================"
 
@@ -89,24 +92,31 @@ run_step "1"  "outcome prep (Kim GWAS)" \
 
 run_step "2a" "cis-pQTL extract: ARIC" \
   uv run python scripts/02_cis_pqtl_extract/aric.py
+uv run python scripts/qc/yield_report.py --cohort ARIC_EA $STRICT_FLAG
 
-run_step "2b" "cis-pQTL extract: deCODE" \
-  uv run python scripts/02_cis_pqtl_extract/decode.py
+run_step "2b" "cis-pQTL extract: deCODE (${WORKERS} workers)" \
+  uv run python scripts/02_cis_pqtl_extract/decode.py --workers "$WORKERS"
+uv run python scripts/qc/yield_report.py --cohort deCODE $STRICT_FLAG
 
 run_step "2c" "cis-pQTL extract: UKB-PPP (Synapse, ${WORKERS} workers)" \
   uv run python scripts/02_cis_pqtl_extract/ukbppp.py --workers "$WORKERS"
+uv run python scripts/qc/yield_report.py --cohort UKB_PPP $STRICT_FLAG
 
 run_step "2d" "cis-pQTL extract: Fenland (Synapse)" \
   uv run python scripts/02_cis_pqtl_extract/fenland.py
+uv run python scripts/qc/yield_report.py --cohort Fenland $STRICT_FLAG
 
 run_step "3"  "LD clumping (all cohorts)" \
   uv run python scripts/03_clump/clump.py --cohort all
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "4"  "liftover hg19 → GRCh38 (all cohorts)" \
   uv run python scripts/04_liftover/instruments_to_hg38.py --cohort all
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "5"  "harmonise with Kim outcome (all cohorts)" \
   uv run python scripts/05_harmonise/harmonise.py --cohort all
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "6"  "two-sample MR + BH-FDR" \
   Rscript scripts/06_mr/run_mr.R

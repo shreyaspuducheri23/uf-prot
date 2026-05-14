@@ -74,6 +74,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
                     cfg: dict | None = None) -> int:
     n_ok = 0
     n_empty = 0
+    n_fail = 0
     n_since_flush = 0
 
     for protein in bar(todo, desc=f"{cohort} extract"):
@@ -91,6 +92,12 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
             raw = read_fn(protein)
         except Exception as exc:
             log.warning(f"{protein.seqid}: read failed — {exc}")
+            cp.mark_failed(protein.seqid, str(exc), save=False)
+            n_fail += 1
+            n_since_flush += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
             continue
 
         if raw is None or raw.empty:
@@ -123,7 +130,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
             n_since_flush = 0
 
     cp.flush()
-    log.info(f"{cohort}: done. {n_ok} proteins with cis-pQTLs, {n_empty} empty after filters.")
+    log.info(f"{cohort}: done. {n_ok} with cis-pQTLs | {n_empty} empty | {n_fail} read failures")
     return n_ok
 
 
@@ -134,10 +141,11 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
     lock = threading.Lock()
     n_ok = 0
     n_empty = 0
+    n_fail = 0
     n_since_flush = 0
 
     def process_one(protein: ProteinMeta) -> tuple[str, bool]:
-        nonlocal n_ok, n_empty, n_since_flush
+        nonlocal n_ok, n_empty, n_fail, n_since_flush
         out_path = out_dir / f"{protein.seqid}.tsv"
         if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
             with lock:
@@ -153,6 +161,13 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
             raw = read_fn(protein)
         except Exception as exc:
             log.warning(f"{protein.seqid}: read failed — {exc}")
+            with lock:
+                cp.mark_failed(protein.seqid, str(exc), save=False)
+                n_fail += 1
+                n_since_flush += 1
+                if n_since_flush >= _CP_FLUSH_EVERY:
+                    cp.flush()
+                    n_since_flush = 0
             return protein.seqid, False
 
         if raw is None or raw.empty:
@@ -198,7 +213,7 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
         future.result()
 
     cp.flush()
-    log.info(f"{cohort}: done (parallel). {n_ok} proteins with cis-pQTLs, {n_empty} empty.")
+    log.info(f"{cohort}: done (parallel). {n_ok} with cis-pQTLs | {n_empty} empty | {n_fail} read failures")
     return n_ok
 
 

@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from scripts.lib.checkpoint import Checkpoint
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import _apply_filters, _normalize, run_extraction, OUTPUT_COLS
 
@@ -183,6 +184,46 @@ class TestRunExtraction:
                 run_extraction(cohort, [sample_protein], make_read_fn(), workers=workers)
             files = list(out_dir.glob("*.tsv"))
             assert len(files) == 1, f"workers={workers}: expected 1 output file"
+
+    def test_read_failure_tracked_in_checkpoint_sequential(self, tmp_path, sample_protein):
+        """read_fn raising → protein appears in cp.n_failed (sequential path)."""
+        cohort = "ARIC_EA"
+        out_dir = tmp_path / "cis_sumstats"
+        state_dir = tmp_path / "processed_data" / cohort
+        out_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True)
+
+        def read_fn(p):
+            raise IOError("simulated read error")
+
+        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            n_ok = run_extraction(cohort, [sample_protein], read_fn, workers=1)
+
+        assert n_ok == 0
+        cp = Checkpoint(state_dir / "_state_02.json")
+        assert cp.n_failed == 1
+        assert cp.is_failed(sample_protein.seqid)
+
+    def test_read_failure_tracked_in_checkpoint_parallel(self, tmp_path, sample_protein):
+        """read_fn raising → protein appears in cp.n_failed (parallel path)."""
+        cohort = "ARIC_EA"
+        out_dir = tmp_path / "cis_sumstats"
+        state_dir = tmp_path / "processed_data" / cohort
+        out_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True)
+
+        def read_fn(p):
+            raise IOError("simulated read error")
+
+        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            n_ok = run_extraction(cohort, [sample_protein], read_fn, workers=2)
+
+        assert n_ok == 0
+        cp = Checkpoint(state_dir / "_state_02.json")
+        assert cp.n_failed == 1
+        assert cp.is_failed(sample_protein.seqid)
 
     def test_parallel_writes_protein_index(self, tmp_path, sample_protein):
         cohort = "ARIC_EA"
