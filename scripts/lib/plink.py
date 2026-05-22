@@ -3,6 +3,7 @@ import logging
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,21 @@ from scripts.lib.paths import LD_REF_PREFIX, PLINK2
 log = logging.getLogger(__name__)
 
 _PLINK2 = str(PLINK2)
+
+
+@lru_cache(maxsize=4)
+def _bim_pos_to_rsid(bfile: Path) -> dict[tuple[str, int], str]:
+    """Load bfile .bim and return {(chrom, pos): rsid} for real rsIDs only."""
+    bim = pd.read_csv(
+        Path(str(bfile) + ".bim"),
+        sep="\t",
+        header=None,
+        names=["chrom", "rsid", "cm", "pos", "a1", "a2"],
+        dtype={"chrom": str, "rsid": str, "pos": int},
+        usecols=["chrom", "rsid", "pos"],
+    )
+    bim = bim[bim["rsid"].str.startswith("rs")]
+    return {(row.chrom, row.pos): row.rsid for row in bim.itertuples(index=False)}
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -44,9 +60,19 @@ def clump(
     """
     LD clumping via plink2.
     Returns a DataFrame of independent lead SNPs (subset of input rows).
-    Drops rows where rsid == '.'.
+    For variants with rsid == '.', attempts position-based rsID annotation from
+    the bfile .bim before clumping. Variants that cannot be matched are dropped.
     """
-    df = sumstats[sumstats[snp_col] != "."].copy()
+    df = sumstats.copy()
+    missing_mask = df[snp_col] == "."
+    if missing_mask.any() and "chrom" in df.columns and "pos" in df.columns:
+        pos_map = _bim_pos_to_rsid(bfile)
+        df.loc[missing_mask, snp_col] = df.loc[missing_mask].apply(
+            lambda r: pos_map.get((str(r["chrom"]), int(r["pos"])), "."), axis=1
+        )
+        n_annotated = (df[snp_col] != ".").sum() - (~missing_mask).sum()
+        log.debug(f"{seqid}: annotated {n_annotated}/{missing_mask.sum()} missing rsIDs from bim")
+    df = df[df[snp_col] != "."].copy()
     if df.empty:
         return df
 

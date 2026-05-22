@@ -79,11 +79,11 @@ class TestIterTarGzRows:
 
 class TestStreamUkbpppProtein:
     def test_filters_to_cis_window(self, tmp_path):
-        # UKB ID format: chr<c>:<pos>:ref:alt
-        content = b"ID\tBETA\n1:100000:A:T\t0.1\n1:200000:A:T\t0.2\n2:100000:G:C\t0.3\n"
+        # UKB ID format: chr<c>:<pos>:ref:alt; real files are space-delimited
+        content = b"ID BETA\n1:100000:A:T 0.1\n1:200000:A:T 0.2\n2:100000:G:C 0.3\n"
         gz_content = _make_gz(content)
         tar_bytes = _make_tar({"chr1.gz": gz_content, "chr2.gz": _make_gz(
-            b"ID\tBETA\n2:100000:G:C\t0.3\n"
+            b"ID BETA\n2:100000:G:C 0.3\n"
         )})
 
         # Download mock returns our tar

@@ -80,33 +80,48 @@ run_cohort_coloc <- function(cohort) {
       out_df <- fread(out_fp, sep = "\t",
                       colClasses = list(character = c("chromosome", "rsid")))
 
-      # Common SNPs
-      common <- intersect(
-        exp_df[rsid != ".", rsid],
-        out_df[rsid != ".", rsid]
-      )
+      # Build match keys: prefer rsid when available, fall back to chrom:pos
+      exp_has_rsid <- "rsid" %in% names(exp_df) && mean(exp_df$rsid == ".", na.rm = TRUE) < 0.5
+      out_has_rsid <- "rsid" %in% names(out_df) && mean(out_df$rsid == ".", na.rm = TRUE) < 0.5
+      use_rsid <- exp_has_rsid && out_has_rsid
+
+      if (use_rsid) {
+        exp_key <- exp_df$rsid
+        out_key <- out_df$rsid
+      } else {
+        exp_key <- paste0(exp_df$chrom, ":", exp_df$pos)
+        out_key <- paste0(out_df$chromosome, ":", out_df$base_pair_location)
+      }
+
+      common <- intersect(exp_key[exp_key != "."], out_key[out_key != "."])
       if (length(common) < 5) {
         cp <- checkpoint_mark(cp, seqid); next
       }
 
-      exp_sub <- exp_df[rsid %in% common][!duplicated(rsid)]
-      out_sub <- out_df[rsid %in% common][!duplicated(rsid)]
-      # Align order
-      exp_sub <- exp_sub[order(rsid)]
-      out_sub <- out_sub[order(rsid)]
+      exp_sub <- exp_df[exp_key %in% common][!duplicated(exp_key[exp_key %in% common])]
+      out_sub <- out_df[out_key %in% common][!duplicated(out_key[out_key %in% common])]
+      # Align order by key
+      exp_order <- order(exp_key[exp_key %in% common])
+      out_order <- order(out_key[out_key %in% common])
+      exp_sub <- exp_sub[exp_order]
+      out_sub <- out_sub[out_order]
 
       # Infer N_exp from data
       N_exp <- if ("N" %in% names(exp_sub)) as.integer(median(exp_sub$N, na.rm = TRUE)) else 10000L
 
+      # Use the match key as the snp identifier (rsid or chrom:pos)
+      exp_snp_key <- if (use_rsid) exp_sub$rsid else paste0(exp_sub$chrom, ":", exp_sub$pos)
+      out_snp_key <- if (use_rsid) out_sub$rsid else paste0(out_sub$chromosome, ":", out_sub$base_pair_location)
+
       coloc_res <- run_coloc_abf(
         exp_df = data.frame(
-          snp    = exp_sub$rsid,
+          snp    = exp_snp_key,
           beta   = as.numeric(exp_sub$beta),
           se     = as.numeric(exp_sub$se),
           eaf    = as.numeric(exp_sub$EAF)
         ),
         out_df = data.frame(
-          snp    = out_sub$rsid,
+          snp    = out_snp_key,
           beta   = as.numeric(out_sub$beta),
           se     = as.numeric(out_sub$standard_error),
           eaf    = as.numeric(out_sub$effect_allele_frequency)

@@ -1,9 +1,11 @@
 """Tests for scripts.lib.plink helpers used by clumping/proxy workflows."""
 import csv
-import subprocess
+import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import importlib
+import pandas as pd
 import pytest
 
 _plink = importlib.import_module("scripts.lib.plink")
@@ -83,18 +85,6 @@ def test_find_proxies_matches_ground_truth_for_rs10757278():
     ground_truth_path = Path(__file__).resolve().parent / "proxy_test.txt"
     assert ground_truth_path.exists(), f"Missing ground-truth file: {ground_truth_path}"
 
-    # Prefer PATH plink2; fallback to known local binary in this workstation.
-    plink_exec = _plink._PLINK2
-    try:
-        probe = subprocess.run([plink_exec, "--help"], capture_output=True, text=True)
-    except OSError:
-        probe = None
-    if probe is None or probe.returncode not in {0, 1}:
-        fallback = Path("/Users/spuduch/Research/MR_IA/plink2_mac_arm64_20260228/plink2")
-        if not fallback.exists():
-            pytest.fail(f"plink2 unavailable on PATH and fallback missing: {fallback}")
-        plink_exec = str(fallback)
-
     expected: dict[str, float] = {}
     with ground_truth_path.open(newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -110,12 +100,7 @@ def test_find_proxies_matches_ground_truth_for_rs10757278():
                 expected[rsid] = r2
     assert expected, f"No >=0.8 proxy candidates in {ground_truth_path}"
 
-    original_exec = _plink._PLINK2
-    _plink._PLINK2 = plink_exec
-    try:
-        proxy_map = _plink.find_proxies([target], r2_threshold=0.8)
-    finally:
-        _plink._PLINK2 = original_exec
+    proxy_map = _plink.find_proxies([target], r2_threshold=0.8)
 
     assert target in proxy_map, f"No proxy returned for {target}"
     proxy_rsid, proxy_r2 = proxy_map[target]
@@ -126,3 +111,88 @@ def test_find_proxies_matches_ground_truth_for_rs10757278():
 
     assert proxy_rsid == expected_proxy
     assert proxy_r2 == pytest.approx(best_r2)
+
+
+def test_bim_pos_to_rsid_returns_mapping(tmp_path):
+    bim = tmp_path / "ref.bim"
+    bim.write_text(
+        "1\trs111\t0\t100000\tA\tG\n"
+        "1\trs222\t0\t200000\tC\tT\n"
+        "2\trs333\t0\t500000\tA\tC\n"
+    )
+    bfile = tmp_path / "ref"
+    _plink._bim_pos_to_rsid.cache_clear()
+    mapping = _plink._bim_pos_to_rsid(bfile)
+    assert mapping[("1", 100000)] == "rs111"
+    assert mapping[("2", 500000)] == "rs333"
+    assert ("1", 999999) not in mapping
+
+
+def test_clump_annotates_missing_rsids_from_bim(tmp_path):
+    bim = tmp_path / "ref.bim"
+    bim.write_text(
+        "22\trs999\t0\t25212564\tA\tG\n"
+        "22\trs888\t0\t25222564\tC\tT\n"
+    )
+    bfile = tmp_path / "ref"
+
+    sumstats = pd.DataFrame({
+        "seqid":  ["SeqId_TEST"] * 2,
+        "chrom":  ["22", "22"],
+        "pos":    [25_212_564, 25_222_564],
+        "rsid":   [".", "."],
+        "pval":   [1e-10, 1e-9],
+        "EA":     ["A", "C"],
+        "OA":     ["G", "T"],
+        "beta":   [0.5, 0.4],
+        "se":     [0.05, 0.05],
+        "EAF":    [0.3, 0.4],
+        "N":      [30000, 30000],
+    })
+
+    clumps_content = "SNP P\nrs999 1e-10\n"
+
+    def fake_run(cmd, cwd=None):
+        out_prefix = Path(cmd[cmd.index("--out") + 1])
+        out_prefix.with_suffix(".clumps").write_text(clumps_content)
+        return _FakeCompleted()
+
+    _plink._bim_pos_to_rsid.cache_clear()
+    original_run = _plink._run
+    _plink._run = fake_run
+    try:
+        result = _plink.clump(sumstats, "SeqId_TEST", bfile=bfile)
+    finally:
+        _plink._run = original_run
+        _plink._bim_pos_to_rsid.cache_clear()
+
+    assert len(result) == 1
+    assert result["rsid"].iloc[0] == "rs999"
+
+
+def test_clump_drops_variants_not_in_bim(tmp_path):
+    bim = tmp_path / "ref.bim"
+    bim.write_text("22\trs999\t0\t25212564\tA\tG\n")
+    bfile = tmp_path / "ref"
+
+    sumstats = pd.DataFrame({
+        "seqid":  ["SeqId_TEST"],
+        "chrom":  ["22"],
+        "pos":    [99999999],  # not in bim
+        "rsid":   ["."],
+        "pval":   [1e-10],
+        "EA":     ["A"],
+        "OA":     ["G"],
+        "beta":   [0.5],
+        "se":     [0.05],
+        "EAF":    [0.3],
+        "N":      [30000],
+    })
+
+    _plink._bim_pos_to_rsid.cache_clear()
+    try:
+        result = _plink.clump(sumstats, "SeqId_TEST", bfile=bfile)
+    finally:
+        _plink._bim_pos_to_rsid.cache_clear()
+
+    assert result.empty
