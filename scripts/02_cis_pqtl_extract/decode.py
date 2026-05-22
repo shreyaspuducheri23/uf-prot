@@ -25,7 +25,10 @@ import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
 from scripts.lib.config import add_config_arg, load_config, get_section
-from scripts.lib.decode_stream import _get_s3_client, stream_s3_cis_rows, parse_bulk_urls
+from scripts.lib.decode_stream import (
+    _get_s3_client, stream_s3_cis_rows, parse_bulk_urls,
+    DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
+)
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import DECODE_URLS, cohort_dir
 from scripts.lib.progress import bar
@@ -44,10 +47,10 @@ _FAST_PARSER_COLS = frozenset(_REQUIRED_COLS)
 _prefilter_window_bp = 500_000
 _prefilter_pval = 5e-8
 
-_S3_ENDPOINT   = "https://s3-ext.decode.is:10443"
-_S3_BUCKET     = "largescaleplasma-2023"
-_S3_ACCESS_KEY = "SE0AV795UKCQ338YKWP4"
-_S3_SECRET_KEY = "/mkkvYtFJkO+NAhxcm3OhNKAdvwQivhbdQRLeJ/c"
+_S3_ENDPOINT   = DECODE_S3_ENDPOINT
+_S3_BUCKET     = DECODE_S3_BUCKET
+_S3_ACCESS_KEY = DECODE_S3_ACCESS_KEY
+_S3_SECRET_KEY = DECODE_S3_SECRET_KEY
 
 _NORM_CONFIG = {
     "raw": {

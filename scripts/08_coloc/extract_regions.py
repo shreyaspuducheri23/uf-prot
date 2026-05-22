@@ -13,12 +13,15 @@ import pandas as pd
 
 from scripts.lib.checkpoint import Checkpoint, output_exists
 from scripts.lib.cis import cis_window_bounds
-from scripts.lib.decode_stream import iter_decode_rows, parse_bulk_urls
+from scripts.lib.decode_stream import (
+    _get_s3_client, stream_s3_cis_rows,
+    DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
+)
 from scripts.lib.liftover import lift_position
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.outcome import OutcomeLookup
 from scripts.lib.paths import (
-    ARIC_EA_DIR, COHORTS, COLOC_REGIONS_DIR, DECODE_URLS,
+    ARIC_EA_DIR, COHORTS, COLOC_REGIONS_DIR,
     cohort_dir
 )
 from scripts.lib.progress import bar
@@ -59,10 +62,11 @@ def extract_aric_region(seqid: str, chrom: str, start: int, end: int) -> pd.Data
     if not matches:
         return None
 
-    df = pd.read_csv(matches[0], sep="\t", comment="#")
+    df = pd.read_csv(matches[0], sep="\t")
+    df.columns = [c.lstrip("#") for c in df.columns]
     df = df[df["TEST"] == "ADD"]
     df = df.rename(columns={
-        "#CHROM": "chrom", "POS": "pos", "ID": "rsid",
+        "CHROM": "chrom", "POS": "pos", "ID": "rsid",
         "A1": "EA", "REF": "OA", "A1_FREQ": "EAF",
         "BETA": "beta", "SE": "se", "P": "pval", "OBS_CT": "N",
     })
@@ -72,23 +76,53 @@ def extract_aric_region(seqid: str, chrom: str, start: int, end: int) -> pd.Data
     return df if not df.empty else None
 
 
-def extract_decode_region(protein_name: str, url_map: dict,
-                           chrom: str, start: int, end: int) -> pd.DataFrame | None:
-    url = url_map.get(protein_name)
-    if not url:
+_DECODE_CIS_USECOLS = frozenset({
+    "Chrom", "Pos", "rsids", "effectAllele", "otherAllele",
+    "Beta", "SE", "Pval", "N", "ImpMAF",
+})
+
+
+def _load_decode_s3_key_index(cohort_d) -> dict[str, str]:
+    """Load the cached S3 key index written by step 2 (decode.py)."""
+    import json
+    cache_path = cohort_d / "_s3_key_index.json"
+    if not cache_path.exists():
+        log.warning(f"deCODE S3 key index not found at {cache_path}")
+        return {}
+    with open(cache_path) as fh:
+        return json.load(fh)
+
+
+def extract_decode_region_s3(
+    seqid: str,
+    s3_client,
+    s3_key_map: dict[str, str],
+    chrom: str,
+    tss: int,
+    window_bp: int = 1_000_000,
+) -> pd.DataFrame | None:
+    """Extract a cis region for a deCODE protein via S3 streaming (v2 dataset)."""
+    key = s3_key_map.get(seqid)
+    if not key:
+        log.warning(f"deCODE {seqid}: no S3 key in index — skipping")
         return None
-    rows = list(iter_decode_rows(url))
+
+    rows = list(stream_s3_cis_rows(
+        s3_client, DECODE_S3_BUCKET, key,
+        target_chrom=chrom, tss=tss, window_bp=window_bp,
+        usecols=_DECODE_CIS_USECOLS,
+    ))
     if not rows:
         return None
+
     df = pd.DataFrame(rows)
     df = df.rename(columns={
-        "Chrom": "chrom", "Pos(hg38)": "pos", "rsids": "rsid",
-        "effectAllele": "EA", "otherAllele": "OA",
-        "Beta": "beta", "Pval": "pval", "SE": "se", "N": "N",
+        "Chrom": "chrom", "Pos": "pos", "rsids": "rsid",
+        "effectAllele": "EA", "otherAllele": "OA", "ImpMAF": "EAF",
+        "Beta": "beta", "SE": "se", "Pval": "pval", "N": "N",
     })
     df["chrom"] = df["chrom"].astype(str).str.lstrip("chr")
     df["pos"] = pd.to_numeric(df["pos"], errors="coerce").astype("Int64")
-    df = df[(df["chrom"] == chrom) & (df["pos"] >= start) & (df["pos"] <= end)]
     return df if not df.empty else None
 
 
@@ -132,10 +166,12 @@ def extract_cohort_regions(
     cp = Checkpoint(cohort_dir(cohort) / "_state_08_regions.json")
     todo = cp.remaining(candidates, include_failed=retry_failed)
 
-    # Pre-load URL map for deCODE
-    url_map = {}
+    # Pre-load S3 resources for deCODE
+    s3_key_map: dict[str, str] = {}
+    s3_client = None
     if cohort == "deCODE":
-        url_map = {name: url for name, url in parse_bulk_urls(DECODE_URLS)}
+        s3_key_map = _load_decode_s3_key_index(cohort_dir(cohort))
+        s3_client = _get_s3_client(DECODE_S3_ENDPOINT, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY)
 
     n_ok = 0
     with OutcomeLookup() as outcome:
@@ -164,7 +200,7 @@ def extract_cohort_regions(
                 if cohort == "ARIC_EA":
                     exp_df = extract_aric_region(seqid, chrom, start, end)
                 elif cohort == "deCODE":
-                    exp_df = extract_decode_region(seqid, url_map, chrom, start, end)
+                    exp_df = extract_decode_region_s3(seqid, s3_client, s3_key_map, chrom, tss, window_bp=1_000_000)
                 else:
                     log.warning(f"Region re-extraction for {cohort} not yet implemented (use cached sumstats)")
                     # Fall back to the pre-filtered cis_sumstats (narrower but available)

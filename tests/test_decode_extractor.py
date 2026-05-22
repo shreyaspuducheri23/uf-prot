@@ -9,7 +9,6 @@ from unittest.mock import patch, MagicMock, call
 
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import OUTPUT_COLS
-from scripts.lib.paths import DECODE_URLS
 from scripts.lib.decode_stream import parse_bulk_urls
 
 _decode_mod = importlib.import_module("scripts.02_cis_pqtl_extract.decode")
@@ -255,26 +254,12 @@ class TestGetS3Client:
 
 
 @pytest.mark.network
-def test_decode_file_columns_match_rename_dict():
-    """Contract test: stream the header from a real deCODE file and assert
+def test_decode_file_columns_match_rename_dict(real_s3):
+    """Contract test: stream the header from a real deCODE S3 file and assert
     every column the rename dict depends on is actually present."""
-    import httpx
-
-    urls = parse_bulk_urls(DECODE_URLS)
-    assert urls, "bulk_urls.txt is empty or missing"
-    _, url = urls[0]
-
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
-        resp.raise_for_status()
-        chunks = []
-        for chunk in resp.iter_bytes(chunk_size=65536):
-            chunks.append(chunk)
-            if sum(len(c) for c in chunks) >= 65536:
-                break
-
-    raw = b"".join(chunks)
-    with gzip.open(io.BytesIO(raw)) as fh:
-        actual_cols = set(fh.readline().decode().strip().split("\t"))
+    body = real_s3.get_object(Bucket=_S3_BUCKET, Key=_S3_RAW_KEY)["Body"]
+    with gzip.open(io.BufferedReader(body), "rt") as fh:
+        actual_cols = set(fh.readline().strip().split("\t"))
 
     missing = _EXPECTED_SOURCE_COLS - actual_cols
     assert not missing, (

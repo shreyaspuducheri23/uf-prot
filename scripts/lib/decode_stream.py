@@ -4,6 +4,14 @@ deCODE files are accessed via signed URLs from data/raw/deCODE/bulk_urls.txt
 (HTTP) or directly from s3-ext.decode.is:10443 (S3, preferred for throughput).
 Callers decide concurrency; this module focuses on robust retried downloads.
 """
+# ---------------------------------------------------------------------------
+# S3 connection defaults — shared by decode.py and extract_regions.py
+# ---------------------------------------------------------------------------
+DECODE_S3_ENDPOINT   = "https://s3-ext.decode.is:10443"
+DECODE_S3_BUCKET     = "largescaleplasma-2023"
+DECODE_S3_ACCESS_KEY = "SE0AV795UKCQ338YKWP4"
+DECODE_S3_SECRET_KEY = "/mkkvYtFJkO+NAhxcm3OhNKAdvwQivhbdQRLeJ/c"
+DECODE_S3_PREFIX_RAW = "final_somascan_raw"
 import gzip
 import io
 import logging
