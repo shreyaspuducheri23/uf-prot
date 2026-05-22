@@ -16,3 +16,4 @@ logs/
 tools/
 bench_decode_*/
 plink2.log
+tests/_*_cache/
