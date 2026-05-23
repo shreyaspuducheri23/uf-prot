@@ -23,7 +23,8 @@ from scripts.lib.sumstats_io import read_norm, write_norm
 log = setup_logger("04_liftover")
 
 # Cohorts already in hg38 — pass through with chrom_hg38/pos_hg38 = chrom/pos
-HG38_COHORTS = {"deCODE"}
+# ARIC .glm.linear and UKB-PPP VCF-format IDs both encode hg38 positions; do not lift.
+HG38_COHORTS = {"deCODE", "ARIC_EA", "UKB_PPP"}
 
 # Cohorts whose cis_sumstats positions are already in hg38 (even if protein_index
 # says hg19 — ARIC .glm.linear and UKB-PPP IDs both encode hg38 coordinates).

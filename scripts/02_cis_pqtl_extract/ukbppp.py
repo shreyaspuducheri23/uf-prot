@@ -29,7 +29,7 @@ from scripts.lib.cis_extract import run_extraction
 log = setup_logger("02_ukbppp")
 
 COHORT = "UKB_PPP"
-BUILD = "hg19"
+BUILD = "hg38"  # VCF-format IDs encode hg38 coords; _tss_hg19.tsv filename is historical
 SYNAPSE_FOLDER = "syn51365303"
 UKB_N = 34_557
 
@@ -57,6 +57,8 @@ def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[Prote
     entity_map: dict[str, str] = {}
     proteins = []
 
+    # NOTE: filename is historical; the file contains hg38 TSS values (same as BUILD above).
+    # Do not rename — it would invalidate the on-disk cache for existing runs.
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
     tss_cache: dict[str, tuple[str, int]] = {}
     if tss_cache_path.exists():

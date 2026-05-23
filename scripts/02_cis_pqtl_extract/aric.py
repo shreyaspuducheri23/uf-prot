@@ -23,7 +23,7 @@ from scripts.lib.cis_extract import run_extraction
 log = setup_logger("02_aric")
 
 COHORT = "ARIC_EA"
-BUILD = "hg19"
+BUILD = "hg38"  # seqid.txt TSS and .glm.linear positions are both hg38
 ARIC_N = 7_213  # approximate OBS_CT
 
 
