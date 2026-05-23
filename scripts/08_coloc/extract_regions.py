@@ -17,12 +17,12 @@ from scripts.lib.decode_stream import (
     _get_s3_client, stream_s3_cis_rows,
     DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
 )
-from scripts.lib.liftover import lift_position
+from scripts.lib.liftover import lift_position, lift_table
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.outcome import OutcomeLookup
 from scripts.lib.paths import (
     ARIC_EA_DIR, COHORTS, COLOC_REGIONS_DIR,
-    cohort_dir
+    cohort_dir, cis_sumstats_hg38_dir,
 )
 from scripts.lib.progress import bar
 from scripts.lib.sumstats_io import read_norm, write_norm
@@ -65,14 +65,20 @@ def extract_aric_region(seqid: str, chrom: str, start: int, end: int) -> pd.Data
     df = pd.read_csv(matches[0], sep="\t")
     df.columns = [c.lstrip("#") for c in df.columns]
     df = df[df["TEST"] == "ADD"]
+    # plink2 .glm.linear: A1 is the tested (effect) allele; it can be REF or ALT.
+    # OA must be whichever of REF/ALT is NOT A1 — not simply REF.
+    import numpy as np
+    df["OA"] = np.where(df["A1"] == df["REF"], df["ALT"], df["REF"])
     df = df.rename(columns={
         "CHROM": "chrom", "POS": "pos", "ID": "rsid",
-        "A1": "EA", "REF": "OA", "A1_FREQ": "EAF",
+        "A1": "EA", "A1_FREQ": "EAF",
         "BETA": "beta", "SE": "se", "P": "pval", "OBS_CT": "N",
     })
     df["chrom"] = df["chrom"].astype(str)
     df["pos"] = df["pos"].astype(int)
     df = df[(df["chrom"] == chrom) & (df["pos"] >= start) & (df["pos"] <= end)]
+    # ARIC .glm.linear positions are already hg38 (the GWAS was run on GRCh38 despite
+    # the protein_index build tag of hg19) — no liftover needed.
     return df if not df.empty else None
 
 
@@ -203,8 +209,8 @@ def extract_cohort_regions(
                     exp_df = extract_decode_region_s3(seqid, s3_client, s3_key_map, chrom, tss, window_bp=1_000_000)
                 else:
                     log.warning(f"Region re-extraction for {cohort} not yet implemented (use cached sumstats)")
-                    # Fall back to the pre-filtered cis_sumstats (narrower but available)
-                    cis_path = cohort_dir(cohort) / "cis_sumstats" / f"{seqid}.tsv"
+                    # Fall back to pre-filtered cis_sumstats_hg38 (positions already in hg38)
+                    cis_path = cis_sumstats_hg38_dir(cohort) / f"{seqid}.tsv"
                     exp_df = read_norm(cis_path) if cis_path.exists() else None
 
                 if exp_df is None or exp_df.empty:

@@ -47,6 +47,9 @@ def cohort_dir(cohort: str) -> Path:
 def cis_sumstats_dir(cohort: str) -> Path:
     return cohort_dir(cohort) / "cis_sumstats"
 
+def cis_sumstats_hg38_dir(cohort: str) -> Path:
+    return cohort_dir(cohort) / "cis_sumstats_hg38"
+
 def instruments_dir(cohort: str) -> Path:
     return cohort_dir(cohort) / "instruments"
 

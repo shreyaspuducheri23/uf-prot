@@ -80,38 +80,51 @@ run_cohort_coloc <- function(cohort) {
       out_df <- fread(out_fp, sep = "\t",
                       colClasses = list(character = c("chromosome", "rsid")))
 
-      # Build match keys: prefer rsid when available, fall back to chrom:pos
-      exp_has_rsid <- "rsid" %in% names(exp_df) && mean(exp_df$rsid == ".", na.rm = TRUE) < 0.5
-      out_has_rsid <- "rsid" %in% names(out_df) && mean(out_df$rsid == ".", na.rm = TRUE) < 0.5
-      use_rsid <- exp_has_rsid && out_has_rsid
+      # Build allele-aware keys — chrom:pos:EA:OA uniquely identifies each allele
+      # combination. All exposure files are now in hg38 (lifted in steps 4/8a), so
+      # positions are comparable with the hg38 outcome.
+      exp_key <- paste(exp_df$chrom, exp_df$pos, exp_df$EA, exp_df$OA, sep = ":")
 
-      if (use_rsid) {
-        exp_key <- exp_df$rsid
-        out_key <- out_df$rsid
-      } else {
-        exp_key <- paste0(exp_df$chrom, ":", exp_df$pos)
-        out_key <- paste0(out_df$chromosome, ":", out_df$base_pair_location)
-      }
+      out_key_fwd <- paste(out_df$chromosome, out_df$base_pair_location,
+                           out_df$effect_allele, out_df$other_allele, sep = ":")
+      out_key_rev <- paste(out_df$chromosome, out_df$base_pair_location,
+                           out_df$other_allele, out_df$effect_allele, sep = ":")
 
-      common <- intersect(exp_key[exp_key != "."], out_key[out_key != "."])
+      # Tag each outcome row with the exposure key it matches (forward or flipped).
+      # fcase() short-circuits: forward match wins over reverse.
+      out_df[, match_key := fcase(
+        out_key_fwd %in% exp_key, out_key_fwd,
+        out_key_rev %in% exp_key, out_key_rev,
+        default = NA_character_
+      )]
+      # For reverse-matched rows, flip beta and EAF so effect direction is aligned
+      out_df[match_key != out_key_fwd & !is.na(match_key), `:=`(
+        beta                    = -beta,
+        effect_allele_frequency =  1 - effect_allele_frequency
+      )]
+      out_df <- out_df[!is.na(match_key)]
+
+      common <- intersect(
+        exp_key[!duplicated(exp_key)],
+        out_df$match_key[!duplicated(out_df$match_key)]
+      )
       if (length(common) < 5) {
         cp <- checkpoint_mark(cp, seqid); next
       }
 
-      exp_sub <- exp_df[exp_key %in% common][!duplicated(exp_key[exp_key %in% common])]
-      out_sub <- out_df[out_key %in% common][!duplicated(out_key[out_key %in% common])]
-      # Align order by key
-      exp_order <- order(exp_key[exp_key %in% common])
-      out_order <- order(out_key[out_key %in% common])
-      exp_sub <- exp_sub[exp_order]
-      out_sub <- out_sub[out_order]
+      exp_sub     <- exp_df[!duplicated(exp_key) & exp_key %in% common]
+      exp_sub_key <- exp_key[!duplicated(exp_key) & exp_key %in% common]
+
+      out_sub     <- out_df[!duplicated(out_df$match_key) & out_df$match_key %in% common]
+      out_sub_key <- out_df$match_key[!duplicated(out_df$match_key) & out_df$match_key %in% common]
+
+      # Align both frames by sorting on the shared key
+      exp_sub <- exp_sub[order(exp_sub_key)]
+      out_sub <- out_sub[order(out_sub_key)]
+      exp_snp_key <- sort(exp_sub_key)
 
       # Infer N_exp from data
       N_exp <- if ("N" %in% names(exp_sub)) as.integer(median(exp_sub$N, na.rm = TRUE)) else 10000L
-
-      # Use the match key as the snp identifier (rsid or chrom:pos)
-      exp_snp_key <- if (use_rsid) exp_sub$rsid else paste0(exp_sub$chrom, ":", exp_sub$pos)
-      out_snp_key <- if (use_rsid) out_sub$rsid else paste0(out_sub$chromosome, ":", out_sub$base_pair_location)
 
       coloc_res <- run_coloc_abf(
         exp_df = data.frame(
@@ -121,7 +134,7 @@ run_cohort_coloc <- function(cohort) {
           eaf    = as.numeric(exp_sub$EAF)
         ),
         out_df = data.frame(
-          snp    = out_snp_key,
+          snp    = sort(out_sub_key),
           beta   = as.numeric(out_sub$beta),
           se     = as.numeric(out_sub$standard_error),
           eaf    = as.numeric(out_sub$effect_allele_frequency)
