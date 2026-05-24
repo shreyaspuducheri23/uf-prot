@@ -19,7 +19,7 @@ run_protein_mr <- function(harm_dt) {
     c("mr_ivw", "mr_weighted_median", "mr_weighted_mode", "mr_egger_regression")
   }
 
-  res <- mr(harm_dt, method_list = methods)
+  res <- suppressMessages(mr(harm_dt, method_list = methods))
   if (nrow(res) == 0) return(NULL)
 
   # Primary estimate
@@ -67,8 +67,8 @@ run_sensitivity <- function(harm_dt) {
                                    out$egger_intercept_pval < 0.05
 
     # Alternative methods
-    res_all <- mr(harm_dt, method_list = c("mr_ivw", "mr_weighted_median",
-                                            "mr_weighted_mode", "mr_egger_regression"))
+    res_all <- suppressMessages(mr(harm_dt, method_list = c("mr_ivw", "mr_weighted_median",
+                                                             "mr_weighted_mode", "mr_egger_regression")))
     # Direction consistency across all methods
     signs <- sign(res_all$b)
     out$direction_consistent <- length(unique(signs)) == 1
