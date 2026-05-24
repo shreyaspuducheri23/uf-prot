@@ -106,6 +106,13 @@ run_step "2d" "cis-pQTL extract: Fenland (Synapse)" \
   uv run python scripts/02_cis_pqtl_extract/fenland.py
 uv run python scripts/qc/yield_report.py --cohort Fenland $STRICT_FLAG
 
+run_step "2e_prep" "unpack ProteoNexus tars → cis TSVs" \
+  uv run python scripts/02_cis_pqtl_extract/protonexus_unpack.py
+
+run_step "2e" "cis-pQTL extract: UKB-female (ProteoNexus)" \
+  uv run python scripts/02_cis_pqtl_extract/ukb_female.py --workers "$WORKERS"
+uv run python scripts/qc/yield_report.py --cohort UKB_female $STRICT_FLAG
+
 run_step "3"  "LD clumping (all cohorts)" \
   uv run python scripts/03_clump/clump.py --cohort all
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
@@ -135,6 +142,9 @@ run_step "8c" "coloc: coloc.abf sensitivity (R)" \
 
 run_step "9"  "assemble final results table" \
   uv run python scripts/09_assemble/assemble.py
+
+run_step "9b" "cross-cohort gene-level summary" \
+  uv run python scripts/09_assemble/cross_cohort.py
 
 log "========================================================"
 log "Pipeline complete. Results: processed_data/final_results.tsv"

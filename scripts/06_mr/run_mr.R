@@ -29,7 +29,7 @@ setup_logger("06_mr")
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 args     <- commandArgs(trailingOnly = TRUE)
-cohorts_all <- c("ARIC_EA", "deCODE", "UKB_PPP", "Fenland")
+cohorts_all <- c("ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female")
 cohort_arg  <- "all"
 limit_arg   <- Inf
 

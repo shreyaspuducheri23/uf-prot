@@ -20,6 +20,8 @@ DECODE_URLS = DECODE_DIR / "bulk_urls.txt"
 DECODE_ANNOTATED = DECODE_DIR / "assocvariants.annotated.txt.gz"
 FENLAND_DIR = RAW / "fenland"
 UKBPPP_DIR = RAW / "ukb_ppp"
+UKB_FEMALE_DIR = _env_path("LEIO_UKB_FEMALE_DIR",
+                            Path("/Volumes/Extreme SSD/ProteoNexus"))
 KIM_GWAS = RAW / "kim_fibroid_gwas" / "GCST90461958.h.tsv.gz"
 KIM_META = RAW / "kim_fibroid_gwas" / "GCST90461958.h.tsv.gz-meta.yaml"
 
@@ -33,13 +35,15 @@ PLINK2 = "plink2"
 # Tools
 TOOLS = _env_path("LEIO_TOOLS_DIR", ROOT / "tools")
 SHAREPRO_DIR = TOOLS / "SharePro_coloc"
-SHAREPRO_SCRIPT = SHAREPRO_DIR / "src" / "sharepro_loc.py"
+SHAREPRO_SCRIPT = SHAREPRO_DIR / "src" / "SharePro" / "sharepro_coloc.py"
 
 # Processed data per cohort
 PROCESSED = _env_path("LEIO_PROCESSED_DIR", ROOT / "processed_data")
+UKB_FEMALE_CIS_RAW = _env_path("LEIO_UKB_FEMALE_CIS_RAW",
+                                PROCESSED / "UKB_female" / "cis_raw")
 OUTCOME_DIR = PROCESSED / "outcome"
 
-COHORTS = ["ARIC_EA", "deCODE", "UKB_PPP", "Fenland"]
+COHORTS = ["ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female"]
 
 def cohort_dir(cohort: str) -> Path:
     return PROCESSED / cohort
@@ -69,6 +73,7 @@ COLOC_DIR = PROCESSED / "coloc"
 COLOC_REGIONS_DIR = COLOC_DIR / "regions"
 MR_ALL_COHORTS = PROCESSED / "mr_all_cohorts.tsv"
 FINAL_RESULTS = PROCESSED / "final_results.tsv"
+GENE_SUMMARY = PROCESSED / "gene_summary.tsv"
 
 LOGS = _env_path("LEIO_LOGS_DIR", ROOT / "logs")
 
