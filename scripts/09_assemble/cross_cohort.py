@@ -233,14 +233,14 @@ def build_gene_summary(
             all_ses   = ([primary_data["se"]]   if primary_data else []) + rep_ses
             pooled_ma = meta_analysis(all_betas, all_ses) if all_betas else None
 
-            # Replication direction consistency (vs primary direction)
+            # Replication direction agreement: "x/n" where x = cohorts matching
+            # primary direction, n = sensitivity cohorts with data.
             if primary_data and rep_betas:
                 primary_sign = np.sign(primary_data["beta"])
-                direction_consistent_replication = bool(
-                    all(np.sign(b) == primary_sign for b in rep_betas)
-                )
+                n_agree = sum(1 for b in rep_betas if np.sign(b) == primary_sign)
+                direction_consistent_replication = f"{n_agree}/{len(rep_betas)}"
             else:
-                direction_consistent_replication = float("nan")
+                direction_consistent_replication = ""
 
             n_replication_tested  = len(rep_betas)
             n_replication_fdr     = sum(1 for cd in cohort_data.values() if cd["fdr_pass"])

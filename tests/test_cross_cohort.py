@@ -185,8 +185,8 @@ def test_primary_and_replication_columns():
     # n_replication_fdr: 2 sensitivity cohorts pass FDR
     assert row["n_replication_fdr"] == 2
 
-    # direction_consistent_replication: all sensitivity cohorts same sign as primary
-    assert row["direction_consistent_replication"] == True
+    # direction_consistent_replication: "x/n" — both sensitivity cohorts agree
+    assert row["direction_consistent_replication"] == "2/2"
 
 
 # ── 7. Direction flip in replication flagged ─────────────────────────────────
@@ -200,7 +200,8 @@ def test_direction_flip_in_replication():
     primary_summary, _ = build_gene_summary(df, primary_cohort=PRIMARY)
 
     row = primary_summary.iloc[0]
-    assert row["direction_consistent_replication"] == False
+    # deCODE disagrees — 0 out of 1
+    assert row["direction_consistent_replication"] == "0/1"
 
 
 # ── 8. Coloc discordant flag ──────────────────────────────────────────────────
