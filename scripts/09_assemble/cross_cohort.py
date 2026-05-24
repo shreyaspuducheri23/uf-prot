@@ -15,9 +15,10 @@ PRIMARY_COHORT ("UKB_female") is the discovery cohort: the outcome GWAS
 appropriate primary source.  Gene inclusion requires UKB_female FDR < 0.05.
 BH-FDR is applied across UKB_female p-values only.
 
-The remaining four cohorts (ARIC_EA, deCODE, UKB_PPP, Fenland) serve as
-sensitivity / replication: they contribute a replication IVW meta-estimate
-and replications counts, but do not gate discovery.
+Three independent cohorts (ARIC_EA, deCODE, Fenland) serve as replication:
+they contribute a replication IVW meta-estimate and replication counts, but
+do not gate discovery.  UKB_PPP is excluded from replication because it draws
+from the same UK Biobank participants as UKB_female (double-counting).
 
 Genes where UKB_female data is absent (protein not in ProteoNexus panel) are
 written separately to gene_summary_no_ukb_female.tsv for reference.
@@ -41,7 +42,10 @@ from scripts.lib.paths import COHORTS, FINAL_RESULTS, GENE_SUMMARY, PROCESSED
 log = setup_logger("09_assemble_cross_cohort")
 
 PRIMARY_COHORT = "UKB_female"
-SENSITIVITY_COHORTS = [c for c in COHORTS if c != PRIMARY_COHORT]
+# UKB_PPP draws from the same UK Biobank participants as UKB_female — including
+# it as a replication cohort would double-count the same individuals.
+# Only independent cohorts are used for replication.
+SENSITIVITY_COHORTS = [c for c in COHORTS if c not in {PRIMARY_COHORT, "UKB_PPP"}]
 
 # Path for genes that had no UKB_female data
 GENE_SUMMARY_NO_PRIMARY = PROCESSED / "gene_summary_no_ukb_female.tsv"
