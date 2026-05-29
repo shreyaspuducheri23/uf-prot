@@ -49,10 +49,10 @@ def _fake_df(n: int = 3, impmaf: str = "0.12") -> pd.DataFrame:
 
 
 class TestReadDecodeProtein:
-    def _call(self, protein, df):
+    def _call(self, protein, df, n_default=_decode_mod._DEFAULT_N):
         with patch.object(_decode_mod, "_s3_key_map", {protein.seqid: "fake/key"}), \
              patch.object(_decode_mod, "_load_decode_raw_df", return_value=df):
-            return read_decode_protein(protein)
+            return read_decode_protein(protein, n_default=n_default)
 
     def test_returns_dataframe_with_expected_cols(self, sample_protein):
         result = self._call(sample_protein, _fake_df(3))
@@ -108,7 +108,14 @@ class TestReadDecodeProtein:
         }]
         result = self._call(sample_protein, pd.DataFrame(rows))
         assert result is not None
-        assert result["N"].iloc[0] == 35_000
+        assert result["N"].iloc[0] == 35_559
+
+    def test_source_n_is_preserved_when_present(self, sample_protein):
+        df = _fake_df(1)
+        df.loc[0, "N"] = "35938"
+        result = self._call(sample_protein, df)
+        assert result is not None
+        assert result["N"].iloc[0] == 35_938
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,8 @@ import json
 import pytest
 
 from scripts.lib.config import (
-    load_config, get_section, get_cohort_config, get_cohort_build, _validate
+    load_config, get_section, get_cohort_config, get_cohort_build,
+    get_cohort_sample_size, _validate
 )
 from tests.conftest import PIPELINE_CFG
 
@@ -22,9 +23,9 @@ class TestLoadConfig:
         assert cfg["cis_extract"]["window_kb"] == 500
         assert cfg["outcome"]["kim_N"] == 434152
 
-    def test_missing_file_error_mentions_example(self, tmp_path):
+    def test_missing_file_error_mentions_required_config(self, tmp_path):
         missing = str(tmp_path / "nonexistent.json")
-        with pytest.raises(FileNotFoundError, match="pipeline.example.json"):
+        with pytest.raises(FileNotFoundError, match="Pipeline config not found"):
             load_config(missing)
 
     def test_missing_section_raises(self, tmp_path):
@@ -95,6 +96,36 @@ class TestValidate:
         with pytest.raises(ValueError, match="UKB_PPP"):
             _validate(pipeline_cfg)
 
+    def test_obsolete_cohort_n_keys_raise(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["ARIC_EA"]["N"] = 7213
+        with pytest.raises(ValueError, match="obsolete key 'N'"):
+            _validate(pipeline_cfg)
+
+    def test_obsolete_cohort_n_default_keys_raise(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["UKB_PPP"]["N_default"] = 34557
+        with pytest.raises(ValueError, match="obsolete key 'N_default'"):
+            _validate(pipeline_cfg)
+
+    def test_missing_cohort_metadata_raises(self, pipeline_cfg):
+        del pipeline_cfg["cohorts"]["Fenland"]["sample_size"]
+        with pytest.raises(ValueError, match="sample_size"):
+            _validate(pipeline_cfg)
+
+    def test_invalid_sample_size_raises(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["deCODE"]["sample_size"] = 0
+        with pytest.raises(ValueError, match="sample_size"):
+            _validate(pipeline_cfg)
+
+    def test_invalid_n_proteins_raises(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["deCODE"]["n_proteins"] = True
+        with pytest.raises(ValueError, match="n_proteins"):
+            _validate(pipeline_cfg)
+
+    def test_empty_platform_raises(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["ARIC_EA"]["platform"] = ""
+        with pytest.raises(ValueError, match="platform"):
+            _validate(pipeline_cfg)
+
 
 class TestGetSection:
     def test_returns_section(self, pipeline_cfg):
@@ -113,6 +144,22 @@ class TestGetCohortConfig:
 
     def test_returns_cohort_build(self, pipeline_cfg):
         assert get_cohort_build(pipeline_cfg, "ARIC_EA") == "hg38"
+
+    def test_returns_documented_sample_sizes(self, pipeline_cfg):
+        expected = {
+            "ARIC_EA": 7213,
+            "deCODE": 35559,
+            "Fenland": 10708,
+            "UKB_PPP": 34557,
+            "UKB_female": None,
+        }
+        for cohort, sample_size in expected.items():
+            assert get_cohort_sample_size(pipeline_cfg, cohort) == sample_size
+
+    def test_cohorts_do_not_use_ambiguous_n_keys(self, pipeline_cfg):
+        for cohort, cohort_cfg in pipeline_cfg["cohorts"].items():
+            assert "N" not in cohort_cfg, cohort
+            assert "N_default" not in cohort_cfg, cohort
 
     def test_missing_cohort_raises_key_error(self, pipeline_cfg):
         with pytest.raises(KeyError, match="missing cohort"):

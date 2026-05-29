@@ -24,7 +24,9 @@ import time
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
+from scripts.lib.config import (
+    add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
+)
 from scripts.lib.decode_stream import (
     _get_s3_client, stream_s3_cis_rows, parse_bulk_urls,
     DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
@@ -38,7 +40,7 @@ from scripts.lib.cis_extract import run_extraction
 log = setup_logger("02_decode")
 
 BUILD = "hg38"
-_DEFAULT_N = 35_000
+_DEFAULT_N = 35_559
 _REQUIRED_COLS = {
     "Chrom", "Pos", "Name", "rsids", "effectAllele", "otherAllele", "Beta", "Pval", "SE", "N",
     "ImpMAF",
@@ -195,7 +197,7 @@ def _load_decode_raw_df(protein: ProteinMeta) -> pd.DataFrame | None:
     raise last_exc
 
 
-def read_decode_protein(protein: ProteinMeta) -> pd.DataFrame | None:
+def read_decode_protein(protein: ProteinMeta, n_default: int | None = _DEFAULT_N) -> pd.DataFrame | None:
     df = _load_decode_raw_df(protein)
     if df is None:
         return None
@@ -227,9 +229,14 @@ def read_decode_protein(protein: ProteinMeta) -> pd.DataFrame | None:
         return None
 
     if "N" in df.columns:
-        df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(_DEFAULT_N).astype(int)
+        n = pd.to_numeric(df["N"], errors="coerce")
+        if n_default is None and n.isna().any():
+            raise ValueError(f"{protein.seqid}: missing N and no configured sample_size")
+        df["N"] = n.astype(int) if n_default is None else n.fillna(n_default).astype(int)
     else:
-        df["N"] = _DEFAULT_N
+        if n_default is None:
+            raise ValueError(f"{protein.seqid}: missing N column and no configured sample_size")
+        df["N"] = n_default
 
     df = df.dropna(subset=["EAF", "pos", "pval", "beta", "se"])
     if df.empty:
@@ -258,6 +265,7 @@ def main() -> None:
         global COHORT, _s3_key_map, _prefilter_pval, _prefilter_window_bp
         COHORT = norm_cfg["cohort"]
         build = get_cohort_build(cfg, COHORT) if COHORT in cfg["cohorts"] else BUILD
+        n_default = get_cohort_sample_size(cfg, COHORT) if COHORT in cfg["cohorts"] else _DEFAULT_N
         _prefilter_pval = float(cis_cfg["pval_gw"])
         _prefilter_window_bp = int(cis_cfg["window_kb"]) * 1_000
 
@@ -269,7 +277,7 @@ def main() -> None:
         log.info(f"{COHORT}: {len(proteins)} proteins")
 
         def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
-            return read_decode_protein(protein)
+            return read_decode_protein(protein, n_default=n_default)
 
         n = run_extraction(
             COHORT,

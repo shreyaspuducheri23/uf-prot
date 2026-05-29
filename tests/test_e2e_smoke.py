@@ -81,11 +81,11 @@ def _write_config(path: Path) -> None:
         "outcome": {"kim_N": 434152},
         "mhc": {"hg19": [25000000, 34000000], "hg38": [28500000, 33500000]},
         "cohorts": {
-            "ARIC_EA": {"N": None, "build": "hg38"},
-            "Fenland": {"N": 10708, "build": "hg19"},
-            "deCODE": {"N_default": 35000, "build": "hg38"},
-            "UKB_PPP": {"N": None, "build": "hg19"},
-            "UKB_female": {"N": None, "build": "hg19"},
+            "ARIC_EA": {"sample_size": 7213, "n_proteins": 4657, "platform": "SomaScan v4", "ancestry": "European American", "build": "hg38"},
+            "Fenland": {"sample_size": 10708, "n_proteins": 4775, "platform": "SomaScan v4", "ancestry": "British", "build": "hg19"},
+            "deCODE": {"sample_size": 35559, "n_proteins": 4719, "platform": "SomaScan v4", "ancestry": "Icelandic", "build": "hg38"},
+            "UKB_PPP": {"sample_size": 34557, "n_proteins": 2923, "platform": "Olink 3072", "ancestry": "British", "build": "hg19"},
+            "UKB_female": {"sample_size": None, "n_proteins": None, "platform": "Olink 3072", "ancestry": "British female", "build": "hg19"},
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)

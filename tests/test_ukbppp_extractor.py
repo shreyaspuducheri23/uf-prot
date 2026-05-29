@@ -71,6 +71,15 @@ class TestUkbPppProductionNormalization:
         assert out["N"].iloc[0] == _ukb_mod.UKB_N
         assert out["N"].iloc[1] == _ukb_mod.UKB_N
 
+    def test_source_n_is_preserved_when_present(self):
+        rows = _fake_ukbppp_rows(1)
+        rows[0]["N"] = "33333"
+
+        out = _ukb_mod.normalize_ukbppp_rows(rows)
+
+        assert out is not None
+        assert out["N"].iloc[0] == 33_333
+
 
 class TestUkbPppProductionReadFn:
     def test_build_read_fn_uses_streamed_rows_and_window(self, sample_protein):

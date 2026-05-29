@@ -16,7 +16,9 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
+from scripts.lib.config import (
+    add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
+)
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import cohort_dir
 from scripts.lib.progress import bar
@@ -88,7 +90,8 @@ def build_protein_list(protein_files: dict, build: str = BUILD) -> tuple[list[Pr
 
 
 def read_fenland_protein(protein: ProteinMeta, entity_map: dict,
-                          cis_start: int, cis_end: int) -> pd.DataFrame | None:
+                          cis_start: int, cis_end: int,
+                          n_default: int | None = FENLAND_N) -> pd.DataFrame | None:
     files = entity_map.get(protein.seqid, [])
     all_rows = []
     for entity_id, _fname in files:
@@ -136,9 +139,14 @@ def read_fenland_protein(protein: ProteinMeta, entity_map: dict,
         if col in df.columns:
             df[col] = df[col].str.upper()
     if "N" in df.columns:
-        df["N"] = pd.to_numeric(df["N"], errors="coerce").fillna(FENLAND_N).astype(int)
+        n = pd.to_numeric(df["N"], errors="coerce")
+        if n_default is None and n.isna().any():
+            raise ValueError(f"{protein.seqid}: missing N and no configured sample_size")
+        df["N"] = n.astype(int) if n_default is None else n.fillna(n_default).astype(int)
     else:
-        df["N"] = FENLAND_N
+        if n_default is None:
+            raise ValueError(f"{protein.seqid}: missing N column and no configured sample_size")
+        df["N"] = n_default
 
     return df
 
@@ -152,6 +160,7 @@ def main() -> None:
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
     build = get_cohort_build(cfg, COHORT)
+    n_default = get_cohort_sample_size(cfg, COHORT)
     window_kb = cis_cfg["window_kb"]
 
     with RunManifest("02_cis_pqtl_extract/fenland.py") as manifest:
@@ -163,7 +172,7 @@ def main() -> None:
 
         def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
             start, end = cis_window_bounds(protein.tss, kb=window_kb)
-            return read_fenland_protein(protein, entity_map, start, end)
+            return read_fenland_protein(protein, entity_map, start, end, n_default=n_default)
 
         n = run_extraction(COHORT, proteins, read_fn, limit=args.limit, cfg=cis_cfg)
         manifest.n_units = n

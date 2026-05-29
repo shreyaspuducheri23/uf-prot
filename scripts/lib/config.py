@@ -38,11 +38,44 @@ def _validate(cfg: dict) -> None:
     for cohort in COHORTS:
         if cohort not in cohorts:
             raise ValueError(f"Config [cohorts] missing required cohort: {cohort!r}")
-        build = cohorts[cohort].get("build")
+        cohort_cfg = cohorts[cohort]
+        for old_key in ("N", "N_default"):
+            if old_key in cohort_cfg:
+                raise ValueError(
+                    f"Config [cohorts][{cohort!r}] uses obsolete key {old_key!r}; "
+                    "use 'sample_size'"
+                )
+        for key in ("sample_size", "n_proteins", "platform", "ancestry", "build"):
+            if key not in cohort_cfg:
+                raise ValueError(f"Config [cohorts][{cohort!r}] missing required key: {key!r}")
+
+        build = cohort_cfg.get("build")
         if build not in {"hg19", "hg38"}:
             raise ValueError(
                 f"Config [cohorts][{cohort!r}].build must be 'hg19' or 'hg38', got {build!r}"
             )
+        sample_size = cohort_cfg.get("sample_size")
+        if sample_size is not None and (
+            not isinstance(sample_size, int) or isinstance(sample_size, bool) or sample_size <= 0
+        ):
+            raise ValueError(
+                f"Config [cohorts][{cohort!r}].sample_size must be a positive integer or null, "
+                f"got {sample_size!r}"
+            )
+        n_proteins = cohort_cfg.get("n_proteins")
+        if n_proteins is not None and (
+            not isinstance(n_proteins, int) or isinstance(n_proteins, bool) or n_proteins <= 0
+        ):
+            raise ValueError(
+                f"Config [cohorts][{cohort!r}].n_proteins must be a positive integer or null, "
+                f"got {n_proteins!r}"
+            )
+        for key in ("platform", "ancestry"):
+            value = cohort_cfg.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(
+                    f"Config [cohorts][{cohort!r}].{key} must be a non-empty string, got {value!r}"
+                )
 
 
 @lru_cache(maxsize=8)
@@ -50,11 +83,7 @@ def load_config(path: str | None = None) -> dict:
     """Load and validate pipeline.json. Results are cached per resolved path."""
     resolved = Path(path).resolve() if path else DEFAULT_CONFIG_PATH
     if not resolved.exists():
-        example = _ROOT / "config" / "pipeline.example.json"
-        raise FileNotFoundError(
-            f"Pipeline config not found: {resolved}\n"
-            f"Copy {example} → {DEFAULT_CONFIG_PATH} to get started."
-        )
+        raise FileNotFoundError(f"Pipeline config not found: {resolved}")
     with open(resolved) as fh:
         cfg = json.load(fh)
     _validate(cfg)
@@ -83,6 +112,18 @@ def get_cohort_build(cfg: dict, cohort: str) -> Literal["hg19", "hg38"]:
             f"Config [cohorts][{cohort!r}].build must be 'hg19' or 'hg38', got {build!r}"
         )
     return build
+
+
+def get_cohort_sample_size(cfg: dict, cohort: str) -> int | None:
+    sample_size = get_cohort_config(cfg, cohort).get("sample_size")
+    if sample_size is not None and (
+        not isinstance(sample_size, int) or isinstance(sample_size, bool) or sample_size <= 0
+    ):
+        raise ValueError(
+            f"Config [cohorts][{cohort!r}].sample_size must be a positive integer or null, "
+            f"got {sample_size!r}"
+        )
+    return sample_size
 
 
 def add_config_arg(parser: argparse.ArgumentParser) -> None:

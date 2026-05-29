@@ -146,6 +146,17 @@ class TestReadFenlandProtein:
 
         assert result["N"].iloc[0] == 10_708
 
+    def test_source_n_is_preserved_when_present(self, sample_protein):
+        entity_map = {"CRYBB2": [("syn1", "f.txt.gz")]}
+        rows = _make_rows(n=1)
+        rows[0]["N"] = "9999"
+
+        with patch.object(_fenland_mod, "stream_fenland_protein",
+                          return_value=rows):
+            result = read_fenland_protein(sample_protein, entity_map, 25_000_000, 25_700_000)
+
+        assert result["N"].iloc[0] == 9999
+
 
 # ── Real-data integration test ────────────────────────────────────────────────
 # Downloads one Fenland file from Synapse and exercises the full parsing path.

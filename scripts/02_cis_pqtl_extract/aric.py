@@ -14,7 +14,9 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.lib.cis import load_aric_tss
-from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
+from scripts.lib.config import (
+    add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
+)
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import ARIC_EA_DIR, ARIC_SEQID
 from scripts.lib.schema import ProteinMeta
@@ -24,7 +26,7 @@ log = setup_logger("02_aric")
 
 COHORT = "ARIC_EA"
 BUILD = "hg38"  # seqid.txt TSS and .glm.linear positions are both hg38
-ARIC_N = 7_213  # approximate OBS_CT
+ARIC_N = 7_213  # documented fallback when OBS_CT is missing
 
 
 def load_aric_proteins(build: str = BUILD) -> list[ProteinMeta]:
@@ -39,7 +41,7 @@ def load_aric_proteins(build: str = BUILD) -> list[ProteinMeta]:
     return proteins
 
 
-def read_aric_protein(protein: ProteinMeta) -> pd.DataFrame | None:
+def read_aric_protein(protein: ProteinMeta, n_default: int | None = ARIC_N) -> pd.DataFrame | None:
     """Read one ARIC EA .glm.linear file and normalize columns."""
     pattern = str(ARIC_EA_DIR / f"{protein.seqid}.PHENO1.glm.linear")
     matches = glob.glob(pattern)
@@ -70,7 +72,10 @@ def read_aric_protein(protein: ProteinMeta) -> pd.DataFrame | None:
     df["chrom"] = df["chrom"].astype(str)
     df["pos"] = df["pos"].astype(int)
     df["pval"] = pd.to_numeric(df["pval"], errors="coerce")
-    df["N"] = df["N"].fillna(ARIC_N).astype(int)
+    n = pd.to_numeric(df["N"], errors="coerce")
+    if n_default is None and n.isna().any():
+        raise ValueError(f"{protein.seqid}: missing OBS_CT and no configured sample_size")
+    df["N"] = n.astype(int) if n_default is None else n.fillna(n_default).astype(int)
 
     # rsid: use ID column if starts with 'rs', else '.'
     df["rsid"] = df["rsid"].where(df["rsid"].str.startswith("rs"), ".")
@@ -88,10 +93,14 @@ def main() -> None:
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
     build = get_cohort_build(cfg, COHORT)
+    n_default = get_cohort_sample_size(cfg, COHORT)
 
     with RunManifest("02_cis_pqtl_extract/aric.py") as manifest:
         proteins = load_aric_proteins(build=build)
-        n = run_extraction(COHORT, proteins, read_aric_protein, limit=args.limit, cfg=cis_cfg)
+        def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
+            return read_aric_protein(protein, n_default=n_default)
+
+        n = run_extraction(COHORT, proteins, read_fn, limit=args.limit, cfg=cis_cfg)
         manifest.n_units = n
 
 

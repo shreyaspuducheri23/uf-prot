@@ -4,6 +4,7 @@ import sys
 import pytest
 import pandas as pd
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.lib.cis import load_aric_tss
 from scripts.lib.schema import ProteinMeta
@@ -53,6 +54,26 @@ class TestReadAricProtein:
         )
         result = aric.read_aric_protein(protein)
         assert result is None
+
+    def test_missing_obs_ct_fills_from_sample_size(self, sample_protein):
+        raw = pd.DataFrame([{
+            "#CHROM": "22",
+            "POS": 25_212_564,
+            "ID": "rs100",
+            "A1": "A",
+            "REF": "G",
+            "A1_FREQ": 0.2,
+            "BETA": 0.1,
+            "SE": 0.01,
+            "P": 1e-9,
+            "OBS_CT": None,
+            "TEST": "ADD",
+        }])
+        with patch.object(aric.glob, "glob", return_value=["fake.glm.linear"]), \
+             patch.object(aric.pd, "read_csv", return_value=raw):
+            result = aric.read_aric_protein(sample_protein, n_default=7213)
+        assert result is not None
+        assert result["N"].iloc[0] == 7213
 
 
 class TestLoadAricProteins:
