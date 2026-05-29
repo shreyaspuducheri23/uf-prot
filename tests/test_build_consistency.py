@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Unit: BUILD constants in step 2 scripts must be hg38
+# Unit: BUILD constants in step 2 scripts must match native coordinates
 # ---------------------------------------------------------------------------
 
 def test_aric_build_constant_is_hg38():
@@ -17,11 +17,34 @@ def test_aric_build_constant_is_hg38():
     )
 
 
-def test_ukbppp_build_constant_is_hg38():
+def test_ukbppp_build_constant_is_hg19():
     mod = importlib.import_module("scripts.02_cis_pqtl_extract.ukbppp")
-    assert mod.BUILD == "hg38", (
-        "UKB-PPP VCF-format IDs encode hg38 positions — BUILD must reflect that."
+    assert mod.BUILD == "hg19", (
+        "UKB-PPP positions are native hg19/GRCh37 and must be lifted in step 4."
     )
+
+
+def test_extractor_build_constants_match_config(pipeline_cfg):
+    extractors = {
+        "ARIC_EA": "scripts.02_cis_pqtl_extract.aric",
+        "deCODE": "scripts.02_cis_pqtl_extract.decode",
+        "UKB_PPP": "scripts.02_cis_pqtl_extract.ukbppp",
+        "Fenland": "scripts.02_cis_pqtl_extract.fenland",
+        "UKB_female": "scripts.02_cis_pqtl_extract.ukb_female",
+    }
+    for cohort, module_name in extractors.items():
+        mod = importlib.import_module(module_name)
+        assert mod.BUILD == pipeline_cfg["cohorts"][cohort]["build"]
+
+
+def test_hg38_liftover_passthrough_sets_match_extractor_builds(pipeline_cfg):
+    liftover = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
+    expected_hg38 = {
+        cohort for cohort, cfg in pipeline_cfg["cohorts"].items()
+        if cfg["build"] == "hg38"
+    }
+    assert liftover.HG38_COHORTS == expected_hg38
+    assert liftover.CIS_HG38_COHORTS == expected_hg38
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +100,7 @@ def test_lead_snp_within_tss_window(cohort):
     not (PROCESSED / "ARIC_EA" / "instruments_hg38").exists(),
     reason="processed_data not present",
 )
-@pytest.mark.parametrize("cohort", ["ARIC_EA", "UKB_PPP", "deCODE"])
+@pytest.mark.parametrize("cohort", ["ARIC_EA", "deCODE"])
 def test_instruments_hg38_pos_equals_pos_hg38_for_hg38_cohorts(cohort):
     """For hg38 cohorts, liftover must be a no-op: pos == pos_hg38."""
     _mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")

@@ -115,17 +115,21 @@ class TestLiftCohortHg19Liftover:
         assert "pos_hg38" in df_out.columns
 
 
-def test_hg38_cohorts_includes_aric_and_ukbppp():
-    """ARIC_EA and UKB_PPP must be in HG38_COHORTS — their positions are already hg38."""
+def test_hg38_cohorts_include_only_native_hg38_sources():
+    """Only native hg38 cohorts should pass through without liftover."""
     assert "ARIC_EA" in _liftover_script.HG38_COHORTS, \
         "ARIC_EA positions are hg38; must not be lifted"
-    assert "UKB_PPP" in _liftover_script.HG38_COHORTS, \
-        "UKB_PPP positions are hg38; must not be lifted"
+    assert "deCODE" in _liftover_script.HG38_COHORTS, \
+        "deCODE positions are hg38; must not be lifted"
+    assert "UKB_PPP" not in _liftover_script.HG38_COHORTS, \
+        "UKB_PPP positions are hg19; must be lifted"
+    assert "UKB_PPP" not in _liftover_script.CIS_HG38_COHORTS, \
+        "UKB_PPP cis_sumstats positions are hg19; must be lifted"
 
 
-def test_aric_ukbppp_instruments_pass_through_without_shift(tmp_path):
-    """lift_cohort for ARIC_EA/UKB_PPP must not shift positions (pos == pos_hg38)."""
-    for cohort in ("ARIC_EA", "UKB_PPP"):
+def test_aric_instruments_pass_through_without_shift(tmp_path):
+    """lift_cohort for ARIC_EA must not shift positions (pos == pos_hg38)."""
+    for cohort in ("ARIC_EA",):
         in_dir = tmp_path / cohort / "instruments"
         out_dir = tmp_path / cohort / "instruments_hg38"
         state_dir = tmp_path / cohort
@@ -149,34 +153,35 @@ def test_aric_ukbppp_instruments_pass_through_without_shift(tmp_path):
             f"{cohort}: pos and pos_hg38 must be equal (no liftover applied)"
 
 
-def test_fenland_instruments_do_shift_positions(tmp_path):
-    """lift_cohort for Fenland (genuinely hg19) must shift positions."""
-    in_dir  = tmp_path / "instruments"
-    out_dir = tmp_path / "instruments_hg38"
-    state_dir = tmp_path
-    in_dir.mkdir()
+def test_hg19_instruments_do_shift_positions(tmp_path):
+    """lift_cohort for native hg19 cohorts must shift positions."""
+    for cohort in ("Fenland", "UKB_PPP", "UKB_female"):
+        in_dir = tmp_path / cohort / "instruments"
+        out_dir = tmp_path / cohort / "instruments_hg38"
+        state_dir = tmp_path / cohort
+        in_dir.mkdir(parents=True)
 
-    df = pd.DataFrame({
-        "seqid": ["S"], "chrom": ["4"], "pos": [100_092_382],
-        "rsid": ["rs1"], "EA": ["A"], "OA": ["G"],
-        "EAF": [0.3], "beta": [0.1], "se": [0.01],
-        "pval": [1e-9], "N": [10000], "build": ["hg19"],
-    })
-    df.to_csv(in_dir / "S.tsv", sep="\t", index=False)
+        df = pd.DataFrame({
+            "seqid": ["S"], "chrom": ["4"], "pos": [100_092_382],
+            "rsid": ["rs1"], "EA": ["A"], "OA": ["G"],
+            "EAF": [0.3], "beta": [0.1], "se": [0.01],
+            "pval": [1e-9], "N": [10000], "build": ["hg19"],
+        })
+        df.to_csv(in_dir / "S.tsv", sep="\t", index=False)
 
-    def fake_lift_table(df, chrom_col, pos_col, **kwargs):
-        """Simulate a position shift (hg19→hg38 adds ~200 kb for chr4)."""
-        df = df.copy()
-        df["chrom_hg38"] = df[chrom_col]
-        df["pos_hg38"] = df[pos_col] + 200_000
-        return df
+        def fake_lift_table(df, chrom_col, pos_col, **kwargs):
+            """Simulate a position shift (hg19->hg38 adds ~200 kb for chr4)."""
+            df = df.copy()
+            df["chrom_hg38"] = df[chrom_col]
+            df["pos_hg38"] = df[pos_col] + 200_000
+            return df
 
-    with patch.object(_liftover_script, "instruments_dir", return_value=in_dir), \
-         patch.object(_liftover_script, "instruments_hg38_dir", return_value=out_dir), \
-         patch.object(_liftover_script, "cohort_dir", return_value=state_dir), \
-         patch.object(_liftover_script, "lift_table", side_effect=fake_lift_table):
-        lift_cohort("Fenland")
+        with patch.object(_liftover_script, "instruments_dir", return_value=in_dir), \
+             patch.object(_liftover_script, "instruments_hg38_dir", return_value=out_dir), \
+             patch.object(_liftover_script, "cohort_dir", return_value=state_dir), \
+             patch.object(_liftover_script, "lift_table", side_effect=fake_lift_table):
+            lift_cohort(cohort)
 
-    result = pd.read_csv(next(out_dir.glob("*.tsv")), sep="\t")
-    assert (result["pos"] != result["pos_hg38"]).any(), \
-        "Fenland: hg19 positions must be shifted by liftover"
+        result = pd.read_csv(next(out_dir.glob("*.tsv")), sep="\t")
+        assert (result["pos"] != result["pos_hg38"]).any(), \
+            f"{cohort}: hg19 positions must be shifted by liftover"

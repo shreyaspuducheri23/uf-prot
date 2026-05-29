@@ -2,7 +2,7 @@
 """
 04_liftover/instruments_to_hg38.py
 Lift instrument SNP positions to hg38 for downstream harmonisation.
-ARIC_EA, UKB_PPP, and deCODE are already hg38 and pass through unchanged.
+ARIC_EA and deCODE are already hg38 and pass through unchanged.
 
 Usage:
   python scripts/04_liftover/instruments_to_hg38.py [--cohort ARIC_EA] [--limit N]
@@ -23,11 +23,11 @@ from scripts.lib.sumstats_io import read_norm, write_norm
 log = setup_logger("04_liftover")
 
 # Cohorts already in hg38 — pass through with chrom_hg38/pos_hg38 = chrom/pos
-# ARIC .glm.linear and UKB-PPP VCF-format IDs both encode hg38 positions; do not lift.
-HG38_COHORTS = {"deCODE", "ARIC_EA", "UKB_PPP"}
+# ARIC .glm.linear and deCODE positions are already hg38; do not lift.
+HG38_COHORTS = {"deCODE", "ARIC_EA"}
 
 # Cohorts whose cis_sumstats positions are already in hg38.
-CIS_HG38_COHORTS = {"deCODE", "ARIC_EA", "UKB_PPP"}
+CIS_HG38_COHORTS = {"deCODE", "ARIC_EA"}
 LIFTED_REQUIRED_COLS = ["seqid", "chrom", "pos", "chrom_hg38", "pos_hg38"]
 
 
@@ -95,7 +95,7 @@ def lift_cis_sumstats_cohort(cohort: str, limit: int | None = None) -> int:
     """Lift all cis_sumstats files to hg38, writing to cis_sumstats_hg38/.
 
     hg19 cohorts: positions are lifted via lift_table().
-    hg38 cohorts (deCODE): files are passed through unchanged.
+    hg38 cohorts (ARIC_EA, deCODE): files are passed through unchanged.
     Uses a separate checkpoint (_state_04_cis.json) so the instrument
     checkpoint (_state_04.json) is not disturbed.
     """

@@ -29,7 +29,7 @@ from scripts.lib.cis_extract import run_extraction
 log = setup_logger("02_ukbppp")
 
 COHORT = "UKB_PPP"
-BUILD = "hg38"  # VCF-format IDs encode hg38 coords; _tss_hg19.tsv filename is historical
+BUILD = "hg19"
 SYNAPSE_FOLDER = "syn51365303"
 UKB_N = 34_557
 
@@ -57,8 +57,6 @@ def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[Prote
     entity_map: dict[str, str] = {}
     proteins = []
 
-    # NOTE: filename is historical; the file contains hg38 TSS values (same as BUILD above).
-    # Do not rename — it would invalidate the on-disk cache for existing runs.
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
     tss_cache: dict[str, tuple[str, int]] = {}
     if tss_cache_path.exists():
@@ -158,11 +156,6 @@ def main() -> None:
     with RunManifest("02_cis_pqtl_extract/ukbppp.py") as manifest:
         manifest_list = load_ukbppp_manifest()
         proteins, entity_map = build_protein_list(manifest_list)
-
-        # cis positions keyed by (chrom, pos) in hg19 for each protein
-        # We pass the protein object and let stream_ukbppp_protein do position-based filtering
-        # via the ±500kb window; the stream function accepts a position set.
-        # For UKB-PPP we pre-build per-protein cis windows here.
 
         read_fn = build_read_fn(entity_map=entity_map, window_kb=window_kb)
 
