@@ -35,7 +35,7 @@ First, we want to restrict analyses to the european-ancestry. This is for maximi
 | Fenland | SomaScan 10K | ≈10K | Synapse `syn51824537`; ≈5K proteins, 2 files each                   | Stream-only (see below)               |
 
 
-`data/raw/ARIC/seqid.txt` maps SeqId → UniProt → gene symbol → chromosome → TSS (hg19).
+`data/raw/ARIC/seqid.txt` maps SeqId → UniProt → gene symbol → chromosome → TSS (GRCh38).
 
 ### LD reference
 
@@ -115,7 +115,7 @@ uv run python scripts/02_cis_pqtl_extract/fenland.py              # Synapse stre
 # 3. LD clumping (1 Mb window, r² < 0.001, p < 5×10⁻⁸) vs 1000G EUR
 uv run python scripts/03_clump/clump.py --cohort all
 
-# 4. Lift instrument positions from hg19 → GRCh38 (deCODE: pass-through)
+# 4. Lift instrument positions to GRCh38 (ARIC/deCODE: pass-through)
 uv run python scripts/04_liftover/instruments_to_hg38.py --cohort all
 
 # 5. Join instruments with Kim outcome; proxy SNP search for absent variants
@@ -140,11 +140,11 @@ All Python scripts accept `--limit N` to cap the number of proteins (for testing
 
 ### Genome builds
 
-Each cohort's extraction and clumping operate in the cohort's native build. Step 4 lifts surviving instrument SNPs to GRCh38 to align with the Kim outcome (GRCh38). The 1000G EUR LD reference (GRCh37) is used only for clumping and proxy search, both of which operate in native coords before liftover.
+Each cohort's extraction and clumping operate in the cohort's native build. Step 4 writes GRCh38 instrument files for all cohorts, passing through cohorts that are already GRCh38 and lifting genuinely GRCh37 cohorts to align with the Kim outcome (GRCh38). The 1000G EUR LD reference (GRCh37) is used only for clumping and proxy search.
 
 | Source          | Build   | Lifted in step |
 |-----------------|---------|----------------|
-| ARIC EA         | GRCh37  | 04             |
+| ARIC EA         | GRCh38  | pass-through   |
 | deCODE          | GRCh38  | pass-through   |
 | UKB-PPP         | GRCh37  | 04             |
 | Fenland         | GRCh37  | 04             |

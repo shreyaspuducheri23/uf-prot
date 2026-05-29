@@ -19,7 +19,7 @@ class TestReadAricProtein:
         seqid = "SeqId_10000_28"
         chrom, tss, uniprot, gene = tss_map[seqid]
         return ProteinMeta(seqid=seqid, gene=gene, uniprot=uniprot,
-                           chrom=chrom, tss=tss, build="hg19",
+                           chrom=chrom, tss=tss, build="hg38",
                            source_cohort="ARIC_EA")
 
     def test_returns_dataframe_or_none(self, sample_protein):
@@ -49,7 +49,7 @@ class TestReadAricProtein:
     def test_missing_seqid_returns_none(self):
         protein = ProteinMeta(
             seqid="SeqId_NONEXISTENT", gene="FAKE", uniprot="",
-            chrom="1", tss=1_000_000, build="hg19", source_cohort="ARIC_EA",
+            chrom="1", tss=1_000_000, build="hg38", source_cohort="ARIC_EA",
         )
         result = aric.read_aric_protein(protein)
         assert result is None
@@ -64,5 +64,5 @@ class TestLoadAricProteins:
         proteins = aric.load_aric_proteins()
         for p in proteins[:10]:
             assert isinstance(p, ProteinMeta)
-            assert p.build == "hg19"
+            assert p.build == "hg38"
             assert p.source_cohort == "ARIC_EA"

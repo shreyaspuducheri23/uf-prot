@@ -77,8 +77,7 @@ def extract_aric_region(seqid: str, chrom: str, start: int, end: int) -> pd.Data
     df["chrom"] = df["chrom"].astype(str)
     df["pos"] = df["pos"].astype(int)
     df = df[(df["chrom"] == chrom) & (df["pos"] >= start) & (df["pos"] <= end)]
-    # ARIC .glm.linear positions are already hg38 (the GWAS was run on GRCh38 despite
-    # the protein_index build tag of hg19) — no liftover needed.
+    # ARIC .glm.linear positions are already hg38, so no liftover is needed.
     return df if not df.empty else None
 
 

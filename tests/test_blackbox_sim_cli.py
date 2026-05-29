@@ -96,7 +96,7 @@ def _write_config(path: Path, clump_p1: float) -> None:
         "outcome": {"kim_N": 434152},
         "mhc": {"hg19": [25000000, 34000000], "hg38": [28500000, 33500000]},
         "cohorts": {
-            "ARIC_EA": {"N": None, "build": "hg19"},
+            "ARIC_EA": {"N": None, "build": "hg38"},
             "Fenland": {"N": 10708, "build": "hg19"},
             "deCODE": {"N_default": 35000, "build": "hg38"},
             "UKB_PPP": {"N": None, "build": "hg19"},

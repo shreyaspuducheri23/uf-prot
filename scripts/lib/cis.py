@@ -49,7 +49,7 @@ def tss_from_ensembl(gene_symbol: str, build: str) -> Optional[tuple[str, int]]:
 
 def load_aric_tss(seqid_path: Path) -> dict[str, tuple[str, int, str, str]]:
     """
-    Load ARIC seqid.txt: {seqid: (chrom, tss_hg19, uniprot, gene)}.
+    Load ARIC seqid.txt: {seqid: (chrom, tss, uniprot, gene)}.
     """
     df = pd.read_csv(seqid_path, sep="\t", dtype=str)
     # Columns: seqid_in_sample, uniprot_id, entrezgenesymbol, chromosome_name, transcription_start_site

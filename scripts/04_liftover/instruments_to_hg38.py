@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 04_liftover/instruments_to_hg38.py
-Lift instrument SNP positions from hg19 → hg38 for ARIC_EA, UKB_PPP, Fenland.
-deCODE is already hg38 — coordinates are passed through unchanged.
+Lift instrument SNP positions to hg38 for downstream harmonisation.
+ARIC_EA, UKB_PPP, and deCODE are already hg38 and pass through unchanged.
 
 Usage:
   python scripts/04_liftover/instruments_to_hg38.py [--cohort ARIC_EA] [--limit N]
@@ -26,8 +26,7 @@ log = setup_logger("04_liftover")
 # ARIC .glm.linear and UKB-PPP VCF-format IDs both encode hg38 positions; do not lift.
 HG38_COHORTS = {"deCODE", "ARIC_EA", "UKB_PPP"}
 
-# Cohorts whose cis_sumstats positions are already in hg38 (even if protein_index
-# says hg19 — ARIC .glm.linear and UKB-PPP IDs both encode hg38 coordinates).
+# Cohorts whose cis_sumstats positions are already in hg38.
 CIS_HG38_COHORTS = {"deCODE", "ARIC_EA", "UKB_PPP"}
 LIFTED_REQUIRED_COLS = ["seqid", "chrom", "pos", "chrom_hg38", "pos_hg38"]
 

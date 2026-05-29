@@ -14,7 +14,7 @@ from scripts.lib.cis_extract import _apply_filters, _normalize, run_extraction, 
 def sample_protein():
     return ProteinMeta(
         seqid="SeqId_TEST", gene="TESTGENE", uniprot="Q12345",
-        chrom="22", tss=25_212_564, build="hg19", source_cohort="ARIC_EA",
+        chrom="22", tss=25_212_564, build="hg19", source_cohort="Fenland",
     )
 
 
@@ -92,7 +92,7 @@ class TestApplyFiltersAllSix:
     def test_mhc_filter_applied(self):
         protein_chr6 = ProteinMeta(
             seqid="SeqId_MHC", gene="GENE_MHC", uniprot="Q99999",
-            chrom="6", tss=29_000_000, build="hg19", source_cohort="ARIC_EA",
+            chrom="6", tss=29_000_000, build="hg19", source_cohort="Fenland",
         )
         df = pd.DataFrame({
             "chrom": ["6"], "pos": [29_000_000],  # inside MHC hg19

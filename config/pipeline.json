@@ -26,7 +26,7 @@
     "hg38": [28500000, 33500000]
   },
   "cohorts": {
-    "ARIC_EA":    {"N": null, "build": "hg19"},
+    "ARIC_EA":    {"N": null, "build": "hg38"},
     "Fenland":    {"N": 10708, "build": "hg19"},
     "deCODE":     {"N_default": 35000, "build": "hg38"},
     "UKB_PPP":    {"N": null, "build": "hg19"},
