@@ -158,6 +158,7 @@ class TestJoinOutcomeProxySearch:
         proxy_row = _outcome_df()
         proxy_row["rsid"] = "rs_proxy"
         proxy_row["effect_allele"] = "G"  # maps to target OA in mocked phase map
+        proxy_row["other_allele"] = "A"
         proxy_row["beta"] = 0.2
         proxy_row["effect_allele_frequency"] = 0.35
         mock_outcome.fetch_by_rsid.return_value = proxy_row
@@ -171,6 +172,37 @@ class TestJoinOutcomeProxySearch:
         assert n_proxies == 1
         assert result["beta_out"].iloc[0] == pytest.approx(-0.2)
         assert result["EAF_out"].iloc[0] == pytest.approx(0.65)
+        assert bool(result["proxy_flip"].iloc[0]) is True
+
+    def test_proxy_with_different_allele_letters_uses_target_outcome_alleles(self):
+        instr = _instrument_df(rsid=["rs_target"], EA=["A"], OA=["G"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = pd.DataFrame(columns=[
+            "chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "beta", "standard_error", "effect_allele_frequency", "p_value",
+            "rsid", "rs_id", "hm_coordinate_conversion", "hm_code", "variant_id",
+        ])
+        proxy_row = _outcome_df()
+        proxy_row["rsid"] = "rs_proxy"
+        proxy_row["effect_allele"] = "T"
+        proxy_row["other_allele"] = "C"
+        proxy_row["beta"] = 0.2
+        proxy_row["effect_allele_frequency"] = 0.35
+        mock_outcome.fetch_by_rsid.return_value = proxy_row
+
+        with patch.object(_harmonise_mod, "find_proxies",
+                          return_value={"rs_target": ("rs_proxy", 0.95)}), \
+             patch.object(_harmonise_mod, "in_phase_allele_map",
+                          return_value={"A": "C", "G": "T"}):
+            result, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 1
+        assert result["beta_out"].iloc[0] == pytest.approx(-0.2)
+        assert result["EAF_out"].iloc[0] == pytest.approx(0.65)
+        assert result["EA_out"].iloc[0] == "A"
+        assert result["OA_out"].iloc[0] == "G"
+        assert result["proxy_a1"].iloc[0] == "C"
+        assert result["proxy_a2"].iloc[0] == "T"
         assert bool(result["proxy_flip"].iloc[0]) is True
 
     def test_proxy_dropped_when_phase_alignment_unavailable(self):
@@ -281,6 +313,7 @@ class TestCallHarmoniseR:
         proxy_row = _outcome_df()
         proxy_row["rsid"] = "rs_proxy"
         proxy_row["effect_allele"] = "G"  # maps to target OA in mocked phase map
+        proxy_row["other_allele"] = "A"
         proxy_row["beta"] = 0.2
         proxy_row["effect_allele_frequency"] = 0.35
         mock_outcome.fetch_by_rsid.return_value = proxy_row

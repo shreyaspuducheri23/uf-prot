@@ -187,6 +187,11 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
                     continue
 
                 proxy_effect_allele = str(proxy_row.get("EA_out", "")).upper()
+                proxy_other_allele = str(proxy_row.get("OA_out", "")).upper()
+                expected_proxy_alleles = {proxy_for_target_ea, proxy_for_target_oa}
+                if {proxy_effect_allele, proxy_other_allele} != expected_proxy_alleles:
+                    continue
+
                 if proxy_effect_allele == proxy_for_target_ea:
                     flip = False
                 elif proxy_effect_allele == proxy_for_target_oa:
@@ -204,8 +209,8 @@ def _join_outcome(df: pd.DataFrame, outcome: OutcomeLookup) -> tuple[pd.DataFram
 
                 merged = instr.to_dict()
                 merged.update({
-                    "EA_out": proxy_row.get("EA_out"),
-                    "OA_out": proxy_row.get("OA_out"),
+                    "EA_out": target_ea,
+                    "OA_out": target_oa,
                     "EAF_out": eaf_out,
                     "beta_out": beta_out,
                     "se_out": proxy_row.get("se_out"),
