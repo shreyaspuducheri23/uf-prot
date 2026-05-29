@@ -151,7 +151,7 @@ class TestGetCohortConfig:
             "deCODE": 35559,
             "Fenland": 10708,
             "UKB_PPP": 34557,
-            "UKB_female": None,
+            "UKB_female": 17988,
         }
         for cohort, sample_size in expected.items():
             assert get_cohort_sample_size(pipeline_cfg, cohort) == sample_size

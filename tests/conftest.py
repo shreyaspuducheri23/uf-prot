@@ -33,7 +33,7 @@ PIPELINE_CFG = {
             "platform": "Olink 3072", "ancestry": "British", "build": "hg19",
         },
         "UKB_female": {
-            "sample_size": None, "n_proteins": None,
+            "sample_size": 17988, "n_proteins": 2919,
             "platform": "Olink 3072", "ancestry": "British female", "build": "hg19",
         },
     },

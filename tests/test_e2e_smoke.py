@@ -85,7 +85,7 @@ def _write_config(path: Path) -> None:
             "Fenland": {"sample_size": 10708, "n_proteins": 4775, "platform": "SomaScan v4", "ancestry": "British", "build": "hg19"},
             "deCODE": {"sample_size": 35559, "n_proteins": 4719, "platform": "SomaScan v4", "ancestry": "Icelandic", "build": "hg38"},
             "UKB_PPP": {"sample_size": 34557, "n_proteins": 2923, "platform": "Olink 3072", "ancestry": "British", "build": "hg19"},
-            "UKB_female": {"sample_size": None, "n_proteins": None, "platform": "Olink 3072", "ancestry": "British female", "build": "hg19"},
+            "UKB_female": {"sample_size": 17988, "n_proteins": 2919, "platform": "Olink 3072", "ancestry": "British female", "build": "hg19"},
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
