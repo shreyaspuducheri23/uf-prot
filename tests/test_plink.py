@@ -196,3 +196,96 @@ def test_clump_drops_variants_not_in_bim(tmp_path):
         _plink._bim_pos_to_rsid.cache_clear()
 
     assert result.empty
+
+
+# ---------------------------------------------------------------------------
+# r_square_matrix regression tests
+# ---------------------------------------------------------------------------
+
+def test_r_square_matrix_uses_r_unphased(monkeypatch):
+    """r_square_matrix must call --r-unphased, not --r (removed in plink2)."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        raise FileNotFoundError("no matrix")  # stop after the plink call
+
+    monkeypatch.setattr(_plink, "_run", fake_run)
+    with pytest.raises((FileNotFoundError, Exception)):
+        _plink.r_square_matrix(["rs1260326"])
+
+    assert calls, "plink was not called"
+    assert "--r-unphased" in calls[0], \
+        f"Expected --r-unphased in plink cmd, got: {calls[0]}"
+    assert "--r" not in [a for a in calls[0] if a == "--r"], \
+        "Deprecated --r flag must not be used"
+
+
+def test_r_square_matrix_reads_vars_file_for_snp_order(tmp_path, monkeypatch):
+    """r_square_matrix must use the .vars file for index/columns, not the input list."""
+    matrix_content = "1.0\t0.3\n0.3\t1.0\n"
+    vars_content = "rs780094\nrs1260326\n"  # different order from input
+
+    def fake_run(cmd, **kwargs):
+        out_prefix = cmd[cmd.index("--out") + 1]
+        mf = Path(out_prefix + ".unphased.vcor1")
+        mf.write_text(matrix_content)
+        Path(str(mf) + ".vars").write_text(vars_content)
+
+    monkeypatch.setattr(_plink, "_run", fake_run)
+    monkeypatch.setattr(_plink, "LD_REF_PREFIX", tmp_path / "dummy")
+
+    result = _plink.r_square_matrix(["rs1260326", "rs780094"])
+    assert list(result.index)   == ["rs780094", "rs1260326"]
+    assert list(result.columns) == ["rs780094", "rs1260326"]
+
+
+def test_r_square_matrix_uses_maf_filter(monkeypatch):
+    """r_square_matrix must pass --maf 0.01 to plink to exclude monomorphic variants."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        raise FileNotFoundError("no matrix")
+
+    monkeypatch.setattr(_plink, "_run", fake_run)
+    with pytest.raises((FileNotFoundError, Exception)):
+        _plink.r_square_matrix(["rs1260326"])
+
+    assert calls, "plink was not called"
+    assert "--maf" in calls[0], f"Expected --maf flag in plink cmd: {calls[0]}"
+    maf_val = calls[0][calls[0].index("--maf") + 1]
+    assert float(maf_val) >= 0.01, f"MAF threshold should be >= 0.01, got {maf_val}"
+
+
+def test_r_square_matrix_drops_residual_nan_snps(tmp_path, monkeypatch):
+    """Residual NaN after --maf (rare clustered variants) must be dropped, not raised.
+
+    Real pattern: NaN is confined to the problem-SNP rows/columns; clean SNPs
+    have no NaN in their rows.  Dropping the flagged rows/columns yields a clean matrix.
+    """
+    # rs_a and rs_b have NaN with each other (intra-cluster rare variants)
+    # but normal correlations with rs_clean — matching the real observed pattern.
+    matrix_content = (
+        "1.0\t0.3\t0.2\t0.1\n"   # rs_clean1 row — all OK
+        "0.3\t1.0\t0.4\t0.2\n"   # rs_clean2 row — all OK
+        "0.2\t0.4\t1.0\tnan\n"   # rs_a row — NaN with rs_b only
+        "0.1\t0.2\tnan\t1.0\n"   # rs_b row — NaN with rs_a only
+    )
+    vars_content = "rs_clean1\nrs_clean2\nrs_a\nrs_b\n"
+
+    def fake_run(cmd, **kwargs):
+        out_prefix = cmd[cmd.index("--out") + 1]
+        mf = Path(out_prefix + ".unphased.vcor1")
+        mf.write_text(matrix_content)
+        Path(str(mf) + ".vars").write_text(vars_content)
+
+    monkeypatch.setattr(_plink, "_run", fake_run)
+    monkeypatch.setattr(_plink, "LD_REF_PREFIX", tmp_path / "dummy")
+
+    result = _plink.r_square_matrix(["rs_clean1", "rs_clean2", "rs_a", "rs_b"])
+    # Problem SNPs dropped; clean SNPs survive
+    assert "rs_a" not in result.index, "rs_a must be dropped (has NaN)"
+    assert "rs_b" not in result.index, "rs_b must be dropped (has NaN)"
+    assert list(result.index) == ["rs_clean1", "rs_clean2"]
+    assert not result.isna().any().any(), "No NaN should remain"

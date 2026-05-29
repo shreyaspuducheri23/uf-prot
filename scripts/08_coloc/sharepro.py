@@ -11,7 +11,6 @@ Usage:
   python scripts/08_coloc/sharepro.py [--cohort ARIC_EA] [--limit N]
 """
 import argparse
-import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -30,15 +29,16 @@ log = setup_logger("08_sharepro")
 SHAREPRO_OUT = COLOC_REGIONS_DIR.parent / "sharepro_results.tsv"
 
 
-def build_zscore_input(df: pd.DataFrame, n: int,
-                        beta_col: str = "beta", se_col: str = "se",
-                        snp_col: str = "rsid") -> pd.DataFrame:
-    """Compute z-scores and return the input table for SharePro."""
+def build_bse_input(df: pd.DataFrame, n: int,
+                    beta_col: str = "beta", se_col: str = "se",
+                    snp_col: str = "rsid") -> pd.DataFrame:
+    """Build SNP/BETA/SE/N table for SharePro input."""
     df = df.copy()
-    df["z"] = df[beta_col].astype(float) / df[se_col].astype(float)
-    df["snp"] = df[snp_col].astype(str)
-    df["N"] = n
-    return df[["snp", "z", "N"]].dropna()
+    df["SNP"]  = df[snp_col].astype(str)
+    df["BETA"] = df[beta_col].astype(float)
+    df["SE"]   = df[se_col].astype(float)
+    df["N"]    = n
+    return df[["SNP", "BETA", "SE", "N"]].dropna()
 
 
 def _infer_n_exp(exp_df: pd.DataFrame) -> int | None:
@@ -78,67 +78,98 @@ def run_sharepro(region_dir: Path, seqid: str, N_out: int) -> tuple[dict | None,
     common_snps = set(exp_df["rsid"]) & set(out_df["rsid"])
     common_snps = {s for s in common_snps if s != "." and pd.notna(s)}
 
+    # Position-based fallback when rsid matching is insufficient (e.g. UKB_PPP "." rsids)
+    if len(common_snps) < 5 and "pos" in exp_df.columns:
+        out_pos_map = {
+            int(r["base_pair_location"]): str(r["rsid"])
+            for _, r in out_df.iterrows()
+            if pd.notna(r.get("rsid")) and str(r.get("rsid", "")) not in (".", "")
+        }
+        for idx, row in exp_df.iterrows():
+            try:
+                pos = int(row["pos"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            out_rsid = out_pos_map.get(pos)
+            if out_rsid and out_rsid not in common_snps:
+                exp_df.at[idx, "rsid"] = out_rsid   # relabel so zscore input is consistent
+                common_snps.add(out_rsid)
+        if len(common_snps) >= 5:
+            log.debug(f"{seqid}: position fallback found {len(common_snps)} common SNPs")
+
     if len(common_snps) < 5:
         log.debug(f"{seqid}: <5 common SNPs ({len(common_snps)}) — skipping SharePro")
         return None, "insufficient_common_snps"
 
-    exp_sub = exp_df[exp_df["rsid"].isin(common_snps)].drop_duplicates("rsid")
-    out_sub = out_df[out_df["rsid"].isin(common_snps)].drop_duplicates("rsid")
-
-    snp_order = sorted(common_snps)
-    exp_z = build_zscore_input(exp_sub.set_index("rsid").loc[snp_order].reset_index(),
-                                n_exp, snp_col="rsid")
-    out_z = build_zscore_input(out_sub.set_index("rsid").loc[snp_order].reset_index(),
-                                N_out, snp_col="rsid")
-    if exp_z.empty or out_z.empty:
-        return None, "empty_sharepro_z_inputs"
-
-    # LD matrix
+    # LD matrix first — plink may silently drop SNPs absent from the bfile.
+    # We derive the final SNP set from ld_mat.index so that the summary stats
+    # and LD matrix are always the same size (SharePro asserts this).
+    snp_candidates = sorted(common_snps)
     try:
-        ld_mat = r_square_matrix(snp_order)
+        ld_mat = r_square_matrix(snp_candidates)
     except Exception as exc:
         log.warning(f"{seqid}: LD matrix failed — {exc}")
         return None, "ld_matrix_failed"
 
+    actual_snps = list(ld_mat.index)  # subset plink kept in reference
+    if len(actual_snps) < 5:
+        log.debug(f"{seqid}: only {len(actual_snps)} SNPs in LD reference — skipping")
+        return None, "insufficient_snps_in_ld_reference"
+
+    exp_sub = exp_df[exp_df["rsid"].isin(actual_snps)].drop_duplicates("rsid")
+    out_sub = out_df[out_df["rsid"].isin(actual_snps)].drop_duplicates("rsid")
+
+    exp_bse = build_bse_input(exp_sub.set_index("rsid").loc[actual_snps].reset_index(),
+                               n_exp, snp_col="rsid")
+    out_bse = build_bse_input(out_sub.set_index("rsid").loc[actual_snps].reset_index(),
+                               N_out, snp_col="rsid")
+    if exp_bse.empty or out_bse.empty:
+        return None, "empty_sharepro_inputs"
+
     with tempfile.TemporaryDirectory(prefix=f"sharepro_{seqid}_") as tmp:
         tmp = Path(tmp)
 
-        exp_z_path = tmp / "exp_z.txt"
-        out_z_path = tmp / "out_z.txt"
-        ld_path = tmp / "ld.txt"
-        result_path = tmp / "sharepro_result.json"
+        exp_bse_path = tmp / "exp_bse.txt"
+        out_bse_path = tmp / "out_bse.txt"
+        ld_path      = tmp / "ld.txt"
+        save_prefix  = tmp / "result"
 
-        exp_z[["snp", "z", "N"]].to_csv(exp_z_path, sep="\t", index=False)
-        out_z[["snp", "z", "N"]].to_csv(out_z_path, sep="\t", index=False)
+        exp_bse.to_csv(exp_bse_path, sep="\t", index=False)
+        out_bse.to_csv(out_bse_path, sep="\t", index=False)
         ld_mat.to_csv(ld_path, sep="\t", header=False, index=False)
 
         cmd = [
             "python", str(SHAREPRO_SCRIPT),
-            "--z1", str(exp_z_path),
-            "--z2", str(out_z_path),
+            "--z", str(exp_bse_path), str(out_bse_path),
             "--ld", str(ld_path),
-            "--out", str(result_path),
+            "--save", str(save_prefix),
+            "--K", "10",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             log.warning(f"{seqid}: SharePro failed — {res.stderr[:300]}")
             return None, "sharepro_subprocess_failed"
 
-        if not result_path.exists():
+        result_file = Path(str(save_prefix) + ".sharepro.txt")
+        if not result_file.exists():
             log.warning(f"{seqid}: SharePro produced no output")
             return None, "sharepro_output_missing"
 
-        with open(result_path) as fh:
-            raw = json.load(fh)
+        # SharePro writes cs/share/variantProb; share = per-effect-group coloc probability
+        sp_df = pd.read_csv(result_file, sep="\t")
+        shares = (
+            pd.to_numeric(sp_df["share"], errors="coerce").dropna()
+            if "share" in sp_df.columns
+            else pd.Series([], dtype=float)
+        )
+        pp_h4 = float(shares.max()) if not shares.empty else 0.0
 
-        # Extract PP.H4 — SharePro's main colocalization posterior
-        pp_h4 = raw.get("PP.H4", raw.get("pp_h4", None))
         return {
             "seqid": seqid,
-            "n_snps": len(snp_order),
+            "n_snps": len(actual_snps),
             "PP_H4": pp_h4,
-            "coloc_positive": pp_h4 is not None and pp_h4 >= 0.8,
-            "raw": raw,
+            "coloc_positive": pp_h4 >= 0.8,
+            "raw": sp_df.to_dict(orient="records"),
         }, None
 
 

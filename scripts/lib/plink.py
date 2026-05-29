@@ -247,7 +247,7 @@ def in_phase_allele_map(
 
 def r_square_matrix(snp_list: list[str], bfile: Path = LD_REF_PREFIX) -> pd.DataFrame:
     """
-    Compute pairwise r² matrix for snp_list via plink2 --r square.
+    Compute pairwise r² matrix for snp_list via plink2 --r-unphased square.
     Returns a DataFrame (index and columns = rsIDs).
     """
     with tempfile.TemporaryDirectory(prefix="ld_matrix_") as tmpdir:
@@ -258,22 +258,31 @@ def r_square_matrix(snp_list: list[str], bfile: Path = LD_REF_PREFIX) -> pd.Data
         out_prefix = tmp / "ld"
         cmd = [
             _PLINK2,
-            "--bfile",
-            str(bfile),
-            "--extract",
-            str(snpfile),
-            "--r",
-            "square",
-            "--out",
-            str(out_prefix),
+            "--bfile", str(bfile),
+            "--extract", str(snpfile),
+            "--maf", "0.01",                 # exclude monomorphic/near-monomorphic variants;
+            "--r-unphased", "square",        # their LD is undefined (NaN) and unreliable
+            "--out", str(out_prefix),
         ]
         _run(cmd)
 
-        matrix_file = out_prefix.with_suffix(".r.square")
+        matrix_file = out_prefix.with_suffix(".unphased.vcor1")   # new output name
+        vars_file   = Path(str(matrix_file) + ".vars")
         if not matrix_file.exists():
             raise FileNotFoundError(f"plink2 r-square output not found: {matrix_file}")
 
+        # Use the .vars file for SNP order — plink may drop SNPs absent from bfile or below MAF
+        actual_snps = vars_file.read_text().splitlines() if vars_file.exists() else snp_list
         mat = pd.read_csv(matrix_file, sep="\t", header=None)
-        mat.index = snp_list
-        mat.columns = snp_list
+        mat.index   = actual_snps
+        mat.columns = actual_snps
+        # Residual NaN after --maf filter: rare variants in tight clusters where
+        # plink cannot compute r² for some intra-cluster pairs.  NaN is always
+        # confined to the rows/cols of the problem SNPs themselves (clean SNPs are
+        # unaffected), so dropping rows-with-any-NaN yields a clean matrix.
+        nan_rows = mat.isna().any(axis=1)
+        if nan_rows.any():
+            log.debug("r_square_matrix: dropping %d SNPs with residual NaN LD entries",
+                      nan_rows.sum())
+            mat = mat.loc[~nan_rows, ~nan_rows]
         return mat
