@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import cohort_dir
 from scripts.lib.progress import bar
@@ -46,7 +46,7 @@ def load_fenland_manifest() -> dict[str, list[tuple[str, str]]]:
     return protein_files
 
 
-def build_protein_list(protein_files: dict) -> tuple[list[ProteinMeta], dict]:
+def build_protein_list(protein_files: dict, build: str = BUILD) -> tuple[list[ProteinMeta], dict]:
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
     tss_cache: dict[str, tuple[str, int]] = {}
     if tss_cache_path.exists():
@@ -63,7 +63,7 @@ def build_protein_list(protein_files: dict) -> tuple[list[ProteinMeta], dict]:
 
     for gene, files in bar(protein_files.items(), desc="Fenland TSS lookup"):
         if gene not in tss_cache:
-            result = tss_from_ensembl(gene, BUILD)
+            result = tss_from_ensembl(gene, build)
             if result:
                 tss_cache[gene] = result
                 new_rows.append({"gene": gene, "chrom": result[0], "tss": result[1]})
@@ -74,7 +74,7 @@ def build_protein_list(protein_files: dict) -> tuple[list[ProteinMeta], dict]:
         chrom, tss = tss_cache[gene]
         protein = ProteinMeta(
             seqid=gene, gene=gene, uniprot="",
-            chrom=str(chrom), tss=tss, build=BUILD, source_cohort=COHORT,
+            chrom=str(chrom), tss=tss, build=build, source_cohort=COHORT,
         )
         proteins.append(protein)
         entity_map[gene] = files
@@ -151,11 +151,12 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    build = get_cohort_build(cfg, COHORT)
     window_kb = cis_cfg["window_kb"]
 
     with RunManifest("02_cis_pqtl_extract/fenland.py") as manifest:
         protein_files = load_fenland_manifest()
-        proteins, entity_map = build_protein_list(protein_files)
+        proteins, entity_map = build_protein_list(protein_files, build=build)
         log.info(f"Fenland: {len(proteins)} proteins with TSS")
 
         from scripts.lib.cis import cis_window_bounds

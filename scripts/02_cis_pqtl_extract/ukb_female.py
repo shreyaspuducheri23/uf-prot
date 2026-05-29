@@ -18,7 +18,7 @@ from typing import Callable
 
 import pandas as pd
 
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import UKB_FEMALE_CIS_RAW, cohort_dir
 from scripts.lib.schema import ProteinMeta
@@ -48,7 +48,7 @@ def _load_tss_cache(cache_path: Path) -> dict[str, tuple[str, int]]:
         return {}
 
 
-def build_protein_list() -> list[ProteinMeta]:
+def build_protein_list(build: str = BUILD) -> list[ProteinMeta]:
     """
     Scan cis_raw/ for existing TSVs written by protonexus_unpack.py.
     Returns a ProteinMeta for each TSV found.
@@ -73,7 +73,7 @@ def build_protein_list() -> list[ProteinMeta]:
             uniprot="",
             chrom=str(chrom),
             tss=tss,
-            build=BUILD,
+            build=build,
             source_cohort=COHORT,
         ))
 
@@ -168,9 +168,10 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    build = get_cohort_build(cfg, COHORT)
 
     with RunManifest("02_cis_pqtl_extract/ukb_female.py") as manifest:
-        proteins = build_protein_list()
+        proteins = build_protein_list(build=build)
         read_fn = build_read_fn()
         n = run_extraction(
             COHORT,

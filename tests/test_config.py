@@ -3,7 +3,9 @@ import copy
 import json
 import pytest
 
-from scripts.lib.config import load_config, get_section, _validate
+from scripts.lib.config import (
+    load_config, get_section, get_cohort_config, get_cohort_build, _validate
+)
 from tests.conftest import PIPELINE_CFG
 
 
@@ -83,6 +85,16 @@ class TestValidate:
     def test_valid_config_passes(self, pipeline_cfg):
         _validate(pipeline_cfg)  # should not raise
 
+    def test_missing_configured_cohort_raises(self, pipeline_cfg):
+        del pipeline_cfg["cohorts"]["UKB_PPP"]
+        with pytest.raises(ValueError, match="missing required cohort"):
+            _validate(pipeline_cfg)
+
+    def test_invalid_cohort_build_raises(self, pipeline_cfg):
+        pipeline_cfg["cohorts"]["UKB_PPP"]["build"] = "b36"
+        with pytest.raises(ValueError, match="UKB_PPP"):
+            _validate(pipeline_cfg)
+
 
 class TestGetSection:
     def test_returns_section(self, pipeline_cfg):
@@ -92,3 +104,16 @@ class TestGetSection:
     def test_missing_section_raises_key_error(self, pipeline_cfg):
         with pytest.raises(KeyError, match="nonexistent"):
             get_section(pipeline_cfg, "nonexistent")
+
+
+class TestGetCohortConfig:
+    def test_returns_cohort_config(self, pipeline_cfg):
+        cfg = get_cohort_config(pipeline_cfg, "UKB_PPP")
+        assert cfg["build"] == "hg19"
+
+    def test_returns_cohort_build(self, pipeline_cfg):
+        assert get_cohort_build(pipeline_cfg, "ARIC_EA") == "hg38"
+
+    def test_missing_cohort_raises_key_error(self, pipeline_cfg):
+        with pytest.raises(KeyError, match="missing cohort"):
+            get_cohort_config(pipeline_cfg, "NOPE")

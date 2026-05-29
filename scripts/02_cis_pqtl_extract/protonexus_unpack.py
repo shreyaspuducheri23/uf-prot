@@ -22,7 +22,7 @@ import pandas as pd
 
 from scripts.lib.checkpoint import Checkpoint
 from scripts.lib.cis import cis_window_bounds, tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import UKB_FEMALE_DIR, UKB_FEMALE_CIS_RAW, cohort_dir
 from scripts.lib.progress import bar
@@ -59,7 +59,7 @@ def _save_tss_cache(cache_path: Path, cache: dict[str, tuple[str, int]]) -> None
     pd.DataFrame(rows).to_csv(cache_path, sep="\t", index=False)
 
 
-def run_unpack(limit: int | None, window_kb: int) -> int:
+def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
     """
     Main unpack loop.  Returns count of genes successfully written.
     """
@@ -108,7 +108,7 @@ def run_unpack(limit: int | None, window_kb: int) -> int:
 
                     # TSS lookup (cached)
                     if gene not in tss_cache:
-                        result = tss_from_ensembl(gene, BUILD)
+                        result = tss_from_ensembl(gene, build)
                         if result is None:
                             log.warning(f"TSS not found for {gene} — skipping")
                             n_skip_tss += 1
@@ -192,10 +192,11 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    build = get_cohort_build(cfg, COHORT)
     window_kb = cis_cfg["window_kb"]
 
     with RunManifest("02_cis_pqtl_extract/protonexus_unpack.py") as manifest:
-        n = run_unpack(limit=args.limit, window_kb=window_kb)
+        n = run_unpack(limit=args.limit, window_kb=window_kb, build=build)
         manifest.n_units = n
 
 

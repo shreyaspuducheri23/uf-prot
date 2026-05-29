@@ -24,7 +24,7 @@ import time
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.decode_stream import (
     _get_s3_client, stream_s3_cis_rows, parse_bulk_urls,
     DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
@@ -105,11 +105,11 @@ def _build_s3_key_index(prefix: str, pattern: str) -> dict[str, str]:
     return index
 
 
-def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
+def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[ProteinMeta]:
     """
     Convert (protein_name, url) list to ProteinMeta objects.
     protein_name format: '<id>_<sub>_<gene>_<protein>' (e.g. '10000_28_CRYBB2_CRBB2').
-    TSS fetched from Ensembl hg38 REST (cached via @lru_cache).
+    TSS fetched from Ensembl for the requested build (cached via @lru_cache).
     """
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg38.tsv"
     # All deCODE cohorts use identical genes; share the raw-cohort TSS cache when
@@ -140,7 +140,7 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
         seqid = protein_name
 
         if gene not in tss_cache:
-            result = tss_from_ensembl(gene, BUILD)
+            result = tss_from_ensembl(gene, build)
             if result:
                 tss_cache[gene] = result
                 new_cache_rows.append({"gene": gene, "chrom": result[0], "tss": result[1]})
@@ -151,7 +151,7 @@ def build_protein_list(urls: list[tuple[str, str]]) -> list[ProteinMeta]:
         chrom, tss = tss_cache[gene]
         proteins.append(ProteinMeta(
             seqid=seqid, gene=gene, uniprot="",
-            chrom=str(chrom), tss=tss, build=BUILD, source_cohort=COHORT,
+            chrom=str(chrom), tss=tss, build=build, source_cohort=COHORT,
         ))
 
     if new_cache_rows:
@@ -257,13 +257,14 @@ def main() -> None:
     with RunManifest("02_cis_pqtl_extract/decode.py") as manifest:
         global COHORT, _s3_key_map, _prefilter_pval, _prefilter_window_bp
         COHORT = norm_cfg["cohort"]
+        build = get_cohort_build(cfg, COHORT) if COHORT in cfg["cohorts"] else BUILD
         _prefilter_pval = float(cis_cfg["pval_gw"])
         _prefilter_window_bp = int(cis_cfg["window_kb"]) * 1_000
 
         _s3_key_map = _build_s3_key_index(norm_cfg["prefix"], norm_cfg["pattern"])
 
         urls = parse_bulk_urls(DECODE_URLS)
-        proteins = build_protein_list(urls)
+        proteins = build_protein_list(urls, build=build)
 
         log.info(f"{COHORT}: {len(proteins)} proteins")
 

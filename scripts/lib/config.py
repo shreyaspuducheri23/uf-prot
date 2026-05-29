@@ -3,6 +3,7 @@ import argparse
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 _ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _ROOT / "config" / "pipeline.json"
@@ -32,6 +33,16 @@ def _validate(cfg: dict) -> None:
         raise ValueError(f"cis_extract.window_kb must be > 0, got {ce['window_kb']}")
     if not (0 < ce["maf_min"] < 1):
         raise ValueError(f"cis_extract.maf_min must be in (0, 1), got {ce['maf_min']}")
+    from scripts.lib.paths import COHORTS
+    cohorts = cfg["cohorts"]
+    for cohort in COHORTS:
+        if cohort not in cohorts:
+            raise ValueError(f"Config [cohorts] missing required cohort: {cohort!r}")
+        build = cohorts[cohort].get("build")
+        if build not in {"hg19", "hg38"}:
+            raise ValueError(
+                f"Config [cohorts][{cohort!r}].build must be 'hg19' or 'hg38', got {build!r}"
+            )
 
 
 @lru_cache(maxsize=8)
@@ -56,6 +67,22 @@ def get_section(cfg: dict, name: str) -> dict:
             f"Config section {name!r} not found. Available: {sorted(k for k in cfg if not k.startswith('_'))}"
         )
     return cfg[name]
+
+
+def get_cohort_config(cfg: dict, cohort: str) -> dict:
+    cohorts = get_section(cfg, "cohorts")
+    if cohort not in cohorts:
+        raise KeyError(f"Config [cohorts] missing cohort {cohort!r}. Available: {sorted(cohorts)}")
+    return cohorts[cohort]
+
+
+def get_cohort_build(cfg: dict, cohort: str) -> Literal["hg19", "hg38"]:
+    build = get_cohort_config(cfg, cohort).get("build")
+    if build not in {"hg19", "hg38"}:
+        raise ValueError(
+            f"Config [cohorts][{cohort!r}].build must be 'hg19' or 'hg38', got {build!r}"
+        )
+    return build
 
 
 def add_config_arg(parser: argparse.ArgumentParser) -> None:

@@ -85,6 +85,7 @@ def _write_config(path: Path) -> None:
             "Fenland": {"N": 10708, "build": "hg19"},
             "deCODE": {"N_default": 35000, "build": "hg38"},
             "UKB_PPP": {"N": None, "build": "hg19"},
+            "UKB_female": {"N": None, "build": "hg19"},
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)

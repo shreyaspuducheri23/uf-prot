@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.lib.cis import load_aric_tss
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import ARIC_EA_DIR, ARIC_SEQID
 from scripts.lib.schema import ProteinMeta
@@ -27,13 +27,13 @@ BUILD = "hg38"  # seqid.txt TSS and .glm.linear positions are both hg38
 ARIC_N = 7_213  # approximate OBS_CT
 
 
-def load_aric_proteins() -> list[ProteinMeta]:
+def load_aric_proteins(build: str = BUILD) -> list[ProteinMeta]:
     tss_map = load_aric_tss(ARIC_SEQID)  # {seqid: (chrom, tss, uniprot, gene)}
     proteins = []
     for seqid, (chrom, tss, uniprot, gene) in tss_map.items():
         proteins.append(ProteinMeta(
             seqid=seqid, gene=gene, uniprot=uniprot,
-            chrom=chrom, tss=tss, build=BUILD, source_cohort=COHORT,
+            chrom=chrom, tss=tss, build=build, source_cohort=COHORT,
         ))
     log.info(f"ARIC EA: {len(proteins)} proteins from seqid.txt")
     return proteins
@@ -87,9 +87,10 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    build = get_cohort_build(cfg, COHORT)
 
     with RunManifest("02_cis_pqtl_extract/aric.py") as manifest:
-        proteins = load_aric_proteins()
+        proteins = load_aric_proteins(build=build)
         n = run_extraction(COHORT, proteins, read_aric_protein, limit=args.limit, cfg=cis_cfg)
         manifest.n_units = n
 

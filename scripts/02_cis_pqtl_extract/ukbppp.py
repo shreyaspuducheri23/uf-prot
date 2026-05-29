@@ -18,7 +18,7 @@ from typing import Callable
 import pandas as pd
 
 from scripts.lib.cis import tss_from_ensembl
-from scripts.lib.config import add_config_arg, load_config, get_section
+from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import cohort_dir
 from scripts.lib.progress import bar, counter
@@ -52,7 +52,10 @@ def load_ukbppp_manifest() -> list[tuple[str, str, str]]:
     return manifest
 
 
-def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[ProteinMeta], dict[str, str]]:
+def build_protein_list(
+    manifest: list[tuple[str, str, str]],
+    build: str = BUILD,
+) -> tuple[list[ProteinMeta], dict[str, str]]:
     """Returns (proteins, entity_id_map {seqid: entity_id})."""
     entity_map: dict[str, str] = {}
     proteins = []
@@ -70,7 +73,7 @@ def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[Prote
     new_rows = []
     for entity_id, protein_name, gene in bar(manifest, desc="UKB-PPP TSS lookup"):
         if gene not in tss_cache:
-            result = tss_from_ensembl(gene, BUILD)
+            result = tss_from_ensembl(gene, build)
             if result:
                 tss_cache[gene] = result
                 new_rows.append({"gene": gene, "chrom": result[0], "tss": result[1]})
@@ -81,7 +84,7 @@ def build_protein_list(manifest: list[tuple[str, str, str]]) -> tuple[list[Prote
         chrom, tss = tss_cache[gene]
         protein = ProteinMeta(
             seqid=protein_name, gene=gene, uniprot=protein_name.split("_")[-1] if "_" in protein_name else "",
-            chrom=str(chrom), tss=tss, build=BUILD, source_cohort=COHORT,
+            chrom=str(chrom), tss=tss, build=build, source_cohort=COHORT,
         )
         proteins.append(protein)
         entity_map[protein_name] = entity_id
@@ -151,11 +154,12 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
+    build = get_cohort_build(cfg, COHORT)
     window_kb = cis_cfg["window_kb"]
 
     with RunManifest("02_cis_pqtl_extract/ukbppp.py") as manifest:
         manifest_list = load_ukbppp_manifest()
-        proteins, entity_map = build_protein_list(manifest_list)
+        proteins, entity_map = build_protein_list(manifest_list, build=build)
 
         read_fn = build_read_fn(entity_map=entity_map, window_kb=window_kb)
 
