@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 _mod = importlib.import_module("scripts.08_coloc.extract_regions")
 
@@ -213,3 +214,39 @@ def test_missing_raw_cache_uses_one_protein_recovery(tmp_path):
     recover.assert_called_once()
     written = pd.read_csv(tmp_path / "regions" / cohort / seqid / "exposure.tsv", sep="\t")
     assert set(written["rsid"]) == {"rs_recovered"}
+
+
+def test_recover_raw_cis_hg38_removes_partial_liftover_output(tmp_path):
+    cohort = "UKB_PPP"
+    seqid = "SeqId_partial"
+    raw_dir = tmp_path / "raw_cis_sumstats_hg38"
+    native_path = tmp_path / "native.tsv.gz"
+    raw = pd.DataFrame({
+        "chrom": ["1"],
+        "pos": [100_000],
+        "rsid": ["rs1"],
+        "EA": ["A"],
+        "OA": ["G"],
+        "EAF": [0.2],
+        "beta": [0.1],
+        "se": [0.01],
+        "pval": [0.2],
+        "N": [1000],
+    })
+
+    class FakeLiftover:
+        @staticmethod
+        def lift_sumstats_file(_cohort, _native_path, out_path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text("chrom\tpos\n1\t100\n")
+            raise OSError("simulated liftover write failure")
+
+    with patch.object(_mod, "raw_cis_sumstats_hg38_dir", return_value=raw_dir), \
+         patch.object(_mod, "_extract_raw_native_region", return_value=raw), \
+         patch.object(_mod, "write_raw_cis_cache", return_value=native_path), \
+         patch.object(_mod.importlib, "import_module", return_value=FakeLiftover):
+        with pytest.raises(OSError, match="simulated liftover"):
+            _mod._recover_raw_cis_hg38(cohort, seqid, "1", 100_000, "hg19")
+
+    assert not (raw_dir / f"{seqid}.tsv.gz").exists()
+    assert not list(raw_dir.glob("*.tmp.tsv.gz"))

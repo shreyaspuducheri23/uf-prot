@@ -95,18 +95,24 @@ def _make_region(tmp_path: Path, snps: list[str]) -> Path:
     region = tmp_path / "region"
     region.mkdir(exist_ok=True)
     exp = pd.DataFrame({
+        "chrom": ["1"] * len(snps),
+        "pos":  list(range(100, 100 + len(snps))),
         "rsid": snps,
+        "EA":   ["A"] * len(snps),
+        "OA":   ["G"] * len(snps),
         "beta": [0.1] * len(snps),
         "se":   [0.05] * len(snps),
         "N":    [1000] * len(snps),
-        "pos":  list(range(100, 100 + len(snps))),
     })
     out = pd.DataFrame({
+        "chromosome":              ["1"] * len(snps),
+        "base_pair_location":      list(range(100, 100 + len(snps))),
         "rsid":                    snps,
+        "effect_allele":           ["A"] * len(snps),
+        "other_allele":            ["G"] * len(snps),
         "beta":                    [0.1] * len(snps),
         "standard_error":          [0.05] * len(snps),
         "effect_allele_frequency": [0.3] * len(snps),
-        "base_pair_location":      list(range(100, 100 + len(snps))),
     })
     exp.to_csv(region / "exposure.tsv", sep="\t", index=False)
     out.to_csv(region / "outcome.tsv",  sep="\t", index=False)
@@ -119,6 +125,59 @@ def _identity_ld(snp_list):
         [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)],
         index=snp_list, columns=snp_list,
     )
+
+
+def _make_allele_region(
+    tmp_path: Path,
+    exp_rsids: list[str],
+    out_rsids: list[str],
+    exp_ea: str,
+    exp_oa: str,
+    out_ea: str,
+    out_oa: str,
+) -> Path:
+    region = tmp_path / "region"
+    region.mkdir(exist_ok=True)
+    n = len(exp_rsids)
+    exp = pd.DataFrame({
+        "chrom": ["1"] * n,
+        "pos": list(range(100, 100 + n)),
+        "rsid": exp_rsids,
+        "EA": [exp_ea] * n,
+        "OA": [exp_oa] * n,
+        "beta": [0.2] * n,
+        "se": [0.05] * n,
+        "EAF": [0.4] * n,
+        "N": [1000] * n,
+    })
+    out = pd.DataFrame({
+        "chromosome": ["1"] * n,
+        "base_pair_location": list(range(100, 100 + n)),
+        "rsid": out_rsids,
+        "effect_allele": [out_ea] * n,
+        "other_allele": [out_oa] * n,
+        "beta": [0.7] * n,
+        "standard_error": [0.03] * n,
+        "effect_allele_frequency": [0.8] * n,
+    })
+    exp.to_csv(region / "exposure.tsv", sep="\t", index=False)
+    out.to_csv(region / "outcome.tsv", sep="\t", index=False)
+    return region
+
+
+def _capture_sharepro_inputs(monkeypatch, ld_snps: list[str] | None = None) -> dict[str, pd.DataFrame]:
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["exp_bse"] = pd.read_csv(cmd[cmd.index("--z") + 1], sep="\t")
+        captured["out_bse"] = pd.read_csv(cmd[cmd.index("--z") + 2], sep="\t")
+        save_prefix = cmd[cmd.index("--save") + 1]
+        Path(save_prefix + ".sharepro.txt").write_text("cs\tshare\tvariantProb\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(ld_snps or sl))
+    return captured
 
 
 def test_sharepro_script_path_exists():
@@ -207,6 +266,91 @@ def test_run_sharepro_empty_output_gives_pp_h4_zero(tmp_path, monkeypatch):
     assert result is not None, f"Expected success dict, got failure: {err}"
     assert result["PP_H4"] == 0.0
     assert result["coloc_positive"] is False
+
+
+def test_run_sharepro_flips_reverse_allele_outcome_effects(tmp_path, monkeypatch):
+    snps = [f"rs{i}" for i in range(1, 7)]
+    captured = _capture_sharepro_inputs(monkeypatch)
+    region = _make_allele_region(
+        tmp_path,
+        exp_rsids=snps,
+        out_rsids=snps,
+        exp_ea="A",
+        exp_oa="G",
+        out_ea="G",
+        out_oa="A",
+    )
+
+    result, err = _mod.run_sharepro(region, "reverse_alleles", N_out=5000)
+
+    assert result is not None, f"Expected success, got failure: {err}"
+    assert captured["out_bse"]["BETA"].tolist() == [-0.7] * 6
+
+    out_df = pd.read_csv(region / "outcome.tsv", sep="\t").rename(
+        columns={"standard_error": "se", "effect_allele_frequency": "EAF"}
+    )
+    exp_df = pd.read_csv(region / "exposure.tsv", sep="\t", dtype={"chrom": str, "rsid": str})
+    _exp_aligned, out_aligned = _mod._align_sharepro_variants(exp_df, out_df)
+    assert out_aligned["EAF"].tolist() == pytest.approx([0.2] * 6)
+
+
+def test_run_sharepro_excludes_incompatible_same_rsid_variants(tmp_path, monkeypatch):
+    snps = [f"rs{i}" for i in range(1, 7)]
+    region = _make_allele_region(
+        tmp_path,
+        exp_rsids=snps,
+        out_rsids=snps,
+        exp_ea="A",
+        exp_oa="G",
+        out_ea="C",
+        out_oa="T",
+    )
+    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: pytest.fail("LD should not be requested"))
+
+    result, reason = _mod.run_sharepro(region, "incompatible_same_rsid", N_out=5000)
+
+    assert result is None
+    assert reason == "insufficient_common_snps"
+
+
+def test_run_sharepro_excludes_incompatible_position_fallback_variants(tmp_path, monkeypatch):
+    snps = [f"rs{i}" for i in range(1, 7)]
+    region = _make_allele_region(
+        tmp_path,
+        exp_rsids=["."] * 6,
+        out_rsids=snps,
+        exp_ea="A",
+        exp_oa="G",
+        out_ea="C",
+        out_oa="T",
+    )
+    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: pytest.fail("LD should not be requested"))
+
+    result, reason = _mod.run_sharepro(region, "incompatible_position", N_out=5000)
+
+    assert result is None
+    assert reason == "insufficient_common_snps"
+
+
+def test_run_sharepro_position_fallback_uses_outcome_rsid_when_alleles_match(tmp_path, monkeypatch):
+    snps = [f"rs{i}" for i in range(1, 7)]
+    captured = _capture_sharepro_inputs(monkeypatch)
+    region = _make_allele_region(
+        tmp_path,
+        exp_rsids=["."] * 6,
+        out_rsids=snps,
+        exp_ea="A",
+        exp_oa="G",
+        out_ea="A",
+        out_oa="G",
+    )
+
+    result, err = _mod.run_sharepro(region, "compatible_position", N_out=5000)
+
+    assert result is not None, f"Expected success, got failure: {err}"
+    assert captured["exp_bse"]["SNP"].tolist() == snps
+    assert captured["out_bse"]["SNP"].tolist() == snps
+    assert captured["out_bse"]["BETA"].tolist() == [0.7] * 6
 
 
 def test_run_sharepro_ld_snp_subset_aligns_with_sumstats(tmp_path, monkeypatch):

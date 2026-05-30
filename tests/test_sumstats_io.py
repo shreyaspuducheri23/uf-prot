@@ -1,6 +1,7 @@
 """Tests for code.lib.sumstats_io"""
+import gzip
+
 import pandas as pd
-import pytest
 
 from scripts.lib.sumstats_io import read_norm, write_norm
 
@@ -33,3 +34,12 @@ class TestWriteReadNorm:
         write_norm(df, out)
         loaded = read_norm(out)
         assert loaded["chrom"].tolist() == ["1", "22", "X"]
+
+    def test_tsv_gz_is_gzip_compressed(self, tmp_path):
+        df = pd.DataFrame({"chrom": ["1"], "beta": [0.1]})
+        out = tmp_path / "test.tsv.gz"
+        write_norm(df, out)
+
+        assert out.read_bytes()[:2] == b"\x1f\x8b"
+        with gzip.open(out, "rt", encoding="utf-8") as fh:
+            assert fh.readline() == "chrom\tbeta\n"

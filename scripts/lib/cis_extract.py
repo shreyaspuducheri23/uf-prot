@@ -32,6 +32,26 @@ OUTPUT_COLS = [
 RAW_CIS_WINDOW_KB = 1000
 
 
+def _empty_filtered_marker(filtered_path: Path) -> Path:
+    return filtered_path.with_name(f"{filtered_path.name}.empty")
+
+
+def _mark_filtered_empty(filtered_path: Path) -> None:
+    marker = _empty_filtered_marker(filtered_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("empty_after_filters\n")
+
+
+def _cached_outputs_status(filtered_path: Path, raw_path: Path) -> str | None:
+    if not output_exists(raw_path, required_cols=OUTPUT_COLS, min_rows=1):
+        return None
+    if output_exists(filtered_path, required_cols=OUTPUT_COLS, min_rows=1):
+        return "filtered"
+    if _empty_filtered_marker(filtered_path).exists():
+        return "empty"
+    return None
+
+
 def run_extraction(
     cohort: str,
     proteins: list[ProteinMeta],
@@ -83,13 +103,14 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
     for protein in bar(todo, desc=f"{cohort} extract"):
         filtered_path = filtered_dir / f"{protein.seqid}.tsv"
         raw_path = raw_dir / f"{protein.seqid}.tsv.gz"
-        if (
-            output_exists(filtered_path, required_cols=OUTPUT_COLS, min_rows=1)
-            and output_exists(raw_path, required_cols=OUTPUT_COLS, min_rows=1)
-        ):
+        cached_status = _cached_outputs_status(filtered_path, raw_path)
+        if cached_status is not None:
             cp.mark_done(protein.seqid, save=False)
             n_since_flush += 1
-            n_ok += 1
+            if cached_status == "filtered":
+                n_ok += 1
+            else:
+                n_empty += 1
             if n_since_flush >= _CP_FLUSH_EVERY:
                 cp.flush()
                 n_since_flush = 0
@@ -131,6 +152,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
         filtered = _apply_filters(raw_normalized, protein, cfg)
         if filtered.empty:
             log.debug(f"{protein.seqid}: 0 variants after filters")
+            _mark_filtered_empty(filtered_path)
             n_empty += 1
             cp.mark_done(protein.seqid, save=False)
             n_since_flush += 1
@@ -140,6 +162,9 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
             continue
 
         write_norm(filtered, filtered_path)
+        empty_marker = _empty_filtered_marker(filtered_path)
+        if empty_marker.exists():
+            empty_marker.unlink()
         cp.mark_done(protein.seqid, save=False)
         n_since_flush += 1
         n_ok += 1
@@ -166,13 +191,14 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
         nonlocal n_ok, n_empty, n_fail, n_since_flush
         filtered_path = filtered_dir / f"{protein.seqid}.tsv"
         raw_path = raw_dir / f"{protein.seqid}.tsv.gz"
-        if (
-            output_exists(filtered_path, required_cols=OUTPUT_COLS, min_rows=1)
-            and output_exists(raw_path, required_cols=OUTPUT_COLS, min_rows=1)
-        ):
+        cached_status = _cached_outputs_status(filtered_path, raw_path)
+        if cached_status is not None:
             with lock:
                 cp.mark_done(protein.seqid, save=False)
-                n_ok += 1
+                if cached_status == "filtered":
+                    n_ok += 1
+                else:
+                    n_empty += 1
                 n_since_flush += 1
                 if n_since_flush >= _CP_FLUSH_EVERY:
                     cp.flush()
@@ -216,8 +242,9 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
         filtered = _apply_filters(raw_normalized, protein, cfg)
         if filtered.empty:
             log.debug(f"{protein.seqid}: 0 variants after filters")
+            write_norm(raw_normalized, raw_path)
+            _mark_filtered_empty(filtered_path)
             with lock:
-                write_norm(raw_normalized, raw_path)
                 n_empty += 1
                 cp.mark_done(protein.seqid, save=False)
                 n_since_flush += 1
@@ -226,9 +253,13 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
                     n_since_flush = 0
             return protein.seqid, True
 
+        write_norm(raw_normalized, raw_path)
+        write_norm(filtered, filtered_path)
+        empty_marker = _empty_filtered_marker(filtered_path)
+        if empty_marker.exists():
+            empty_marker.unlink()
+
         with lock:
-            write_norm(raw_normalized, raw_path)
-            write_norm(filtered, filtered_path)
             cp.mark_done(protein.seqid, save=False)
             n_ok += 1
             n_since_flush += 1

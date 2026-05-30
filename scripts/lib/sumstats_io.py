@@ -22,7 +22,8 @@ def read_norm(path: str | Path) -> pd.DataFrame:
 def write_norm(df: pd.DataFrame, path: str | Path) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(p, sep="\t", index=False)
+    compression = "gzip" if p.name.endswith(".gz") else None
+    df.to_csv(p, sep="\t", index=False, compression=compression)
 
 
 def read_instruments(path: str | Path) -> pd.DataFrame:

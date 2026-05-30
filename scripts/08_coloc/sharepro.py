@@ -54,6 +54,114 @@ def _infer_n_exp(exp_df: pd.DataFrame) -> int | None:
     return n_exp
 
 
+def _valid_snp_id(value) -> bool:
+    if pd.isna(value):
+        return False
+    return str(value).strip() not in {"", ".", "nan", "None"}
+
+
+def _variant_key(
+    df: pd.DataFrame,
+    chrom_col: str,
+    pos_col: str,
+    ea_col: str,
+    oa_col: str,
+) -> pd.Series:
+    chrom = (
+        df[chrom_col]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"^chr", "", case=False, regex=True)
+    )
+    pos = pd.to_numeric(df[pos_col], errors="coerce").astype("Int64").astype("string")
+    ea = df[ea_col].astype("string").str.strip().str.upper()
+    oa = df[oa_col].astype("string").str.strip().str.upper()
+
+    valid = (
+        chrom.notna()
+        & pos.notna()
+        & ea.notna()
+        & oa.notna()
+        & ~chrom.isin(["", "."])
+        & ~ea.isin(["", "."])
+        & ~oa.isin(["", "."])
+    )
+    key = chrom + ":" + pos + ":" + ea + ":" + oa
+    return key.where(valid)
+
+
+def _align_sharepro_variants(
+    exp_df: pd.DataFrame,
+    out_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Return exposure/outcome rows matched by chrom:pos:alleles.
+
+    Outcome rows are aligned to the exposure effect allele. Reverse allele
+    matches have outcome beta and EAF flipped. The returned frames include a
+    sharepro_snp column with the rsID used for SharePro input and LD lookup.
+    """
+    required_exp = {"chrom", "pos", "EA", "OA", "beta", "se", "rsid"}
+    required_out = {
+        "chromosome", "base_pair_location", "effect_allele", "other_allele",
+        "beta", "se", "EAF", "rsid",
+    }
+    if not required_exp.issubset(exp_df.columns) or not required_out.issubset(out_df.columns):
+        return pd.DataFrame(), pd.DataFrame()
+
+    exp = exp_df.copy()
+    out = out_df.copy()
+
+    exp["match_key"] = _variant_key(exp, "chrom", "pos", "EA", "OA")
+    out["key_fwd"] = _variant_key(
+        out, "chromosome", "base_pair_location", "effect_allele", "other_allele"
+    )
+    out["key_rev"] = _variant_key(
+        out, "chromosome", "base_pair_location", "other_allele", "effect_allele"
+    )
+
+    exp = exp[exp["match_key"].notna()].drop_duplicates("match_key")
+    if exp.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    exp_keys = set(exp["match_key"])
+    out["match_key"] = pd.NA
+    fwd = out["key_fwd"].isin(exp_keys)
+    rev = out["key_rev"].isin(exp_keys) & ~fwd
+    out.loc[fwd, "match_key"] = out.loc[fwd, "key_fwd"]
+    out.loc[rev, "match_key"] = out.loc[rev, "key_rev"]
+    out.loc[rev, "beta"] = -pd.to_numeric(out.loc[rev, "beta"], errors="coerce")
+    out.loc[rev, "EAF"] = 1 - pd.to_numeric(out.loc[rev, "EAF"], errors="coerce")
+    out = out[out["match_key"].notna()].drop_duplicates("match_key")
+    if out.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    matched_keys = out["match_key"].tolist()
+    exp_aligned = exp.set_index("match_key").loc[matched_keys].reset_index()
+    out_aligned = out.set_index("match_key").loc[matched_keys].reset_index()
+
+    snp_ids = []
+    for exp_rsid, out_rsid in zip(exp_aligned["rsid"], out_aligned["rsid"], strict=True):
+        if _valid_snp_id(out_rsid):
+            snp_ids.append(str(out_rsid).strip())
+        elif _valid_snp_id(exp_rsid):
+            snp_ids.append(str(exp_rsid).strip())
+        else:
+            snp_ids.append(pd.NA)
+
+    exp_aligned["sharepro_snp"] = snp_ids
+    out_aligned["sharepro_snp"] = snp_ids
+    valid_snp = exp_aligned["sharepro_snp"].notna()
+    exp_aligned = exp_aligned[valid_snp].copy()
+    out_aligned = out_aligned[valid_snp].copy()
+
+    if exp_aligned.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    unique_snp = ~exp_aligned["sharepro_snp"].duplicated()
+    return exp_aligned[unique_snp].copy(), out_aligned[unique_snp].copy()
+
+
 def run_sharepro(region_dir: Path, seqid: str, N_out: int) -> tuple[dict | None, str | None]:
     """
     Run SharePro for one protein region.
@@ -70,32 +178,13 @@ def run_sharepro(region_dir: Path, seqid: str, N_out: int) -> tuple[dict | None,
     if n_exp is None:
         return None, "invalid_or_missing_N_exp"
 
-    # Merge on rsid to get common SNPs
     out_df = out_df.rename(columns={
         "beta": "beta", "standard_error": "se",
         "effect_allele_frequency": "EAF",
     })
-    common_snps = set(exp_df["rsid"]) & set(out_df["rsid"])
-    common_snps = {s for s in common_snps if s != "." and pd.notna(s)}
 
-    # Position-based fallback when rsid matching is insufficient (e.g. UKB_PPP "." rsids)
-    if len(common_snps) < 5 and "pos" in exp_df.columns:
-        out_pos_map = {
-            int(r["base_pair_location"]): str(r["rsid"])
-            for _, r in out_df.iterrows()
-            if pd.notna(r.get("rsid")) and str(r.get("rsid", "")) not in (".", "")
-        }
-        for idx, row in exp_df.iterrows():
-            try:
-                pos = int(row["pos"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            out_rsid = out_pos_map.get(pos)
-            if out_rsid and out_rsid not in common_snps:
-                exp_df.at[idx, "rsid"] = out_rsid   # relabel so zscore input is consistent
-                common_snps.add(out_rsid)
-        if len(common_snps) >= 5:
-            log.debug(f"{seqid}: position fallback found {len(common_snps)} common SNPs")
+    exp_aligned, out_aligned = _align_sharepro_variants(exp_df, out_df)
+    common_snps = set(exp_aligned["sharepro_snp"]) if not exp_aligned.empty else set()
 
     if len(common_snps) < 5:
         log.debug(f"{seqid}: <5 common SNPs ({len(common_snps)}) — skipping SharePro")
@@ -116,13 +205,13 @@ def run_sharepro(region_dir: Path, seqid: str, N_out: int) -> tuple[dict | None,
         log.debug(f"{seqid}: only {len(actual_snps)} SNPs in LD reference — skipping")
         return None, "insufficient_snps_in_ld_reference"
 
-    exp_sub = exp_df[exp_df["rsid"].isin(actual_snps)].drop_duplicates("rsid")
-    out_sub = out_df[out_df["rsid"].isin(actual_snps)].drop_duplicates("rsid")
+    exp_sub = exp_aligned[exp_aligned["sharepro_snp"].isin(actual_snps)].drop_duplicates("sharepro_snp")
+    out_sub = out_aligned[out_aligned["sharepro_snp"].isin(actual_snps)].drop_duplicates("sharepro_snp")
 
-    exp_bse = build_bse_input(exp_sub.set_index("rsid").loc[actual_snps].reset_index(),
-                               n_exp, snp_col="rsid")
-    out_bse = build_bse_input(out_sub.set_index("rsid").loc[actual_snps].reset_index(),
-                               N_out, snp_col="rsid")
+    exp_bse = build_bse_input(exp_sub.set_index("sharepro_snp").loc[actual_snps].reset_index(),
+                               n_exp, snp_col="sharepro_snp")
+    out_bse = build_bse_input(out_sub.set_index("sharepro_snp").loc[actual_snps].reset_index(),
+                               N_out, snp_col="sharepro_snp")
     if exp_bse.empty or out_bse.empty:
         return None, "empty_sharepro_inputs"
 

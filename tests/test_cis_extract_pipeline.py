@@ -224,6 +224,56 @@ class TestRunExtraction:
         raw = pd.read_csv(raw_dir / f"{protein.seqid}.tsv.gz", sep="\t")
         assert set(raw["rsid"]) == {"rs_mhc"}
         assert not (filtered_dir / f"{protein.seqid}.tsv").exists()
+        assert (filtered_dir / f"{protein.seqid}.tsv.empty").exists()
+
+    def test_filter_empty_raw_cache_marker_skips_after_checkpoint_loss(self, tmp_path):
+        cohort = "Fenland"
+        protein = ProteinMeta(
+            seqid="SeqId_EMPTY_CACHE",
+            gene="EMPTYGENE",
+            uniprot="P1",
+            chrom="6",
+            tss=29_000_000,
+            build="hg19",
+            source_cohort=cohort,
+        )
+        filtered_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
+        state_dir = tmp_path / "state"
+        filtered_dir.mkdir()
+        raw_dir.mkdir()
+        state_dir.mkdir()
+        calls = {"n": 0}
+
+        def read_fn(_p):
+            calls["n"] += 1
+            return pd.DataFrame({
+                "chrom": ["6"],
+                "pos": [29_000_000],
+                "rsid": ["rs_mhc"],
+                "EA": ["A"],
+                "OA": ["G"],
+                "EAF": [0.3],
+                "beta": [0.5],
+                "se": [0.05],
+                "pval": [1e-9],
+                "N": [7213],
+            })
+
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            assert run_extraction(cohort, [protein], read_fn) == 0
+
+        assert calls["n"] == 1
+        (state_dir / "_state_02.json").unlink()
+
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            assert run_extraction(cohort, [protein], read_fn) == 0
+
+        assert calls["n"] == 1
 
     def test_checkpointing_skips_done(self, tmp_path, sample_protein):
         """Proteins already in checkpoint should not call read_fn."""

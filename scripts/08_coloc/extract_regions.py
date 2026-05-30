@@ -139,7 +139,9 @@ def _raw_cis_hg38_path(cohort: str, seqid: str):
 
 def _load_raw_cis_hg38(cohort: str, seqid: str) -> pd.DataFrame | None:
     path = _raw_cis_hg38_path(cohort, seqid)
-    return read_norm(path) if path.exists() else None
+    if not output_exists(path, required_cols=EXPOSURE_REGION_REQUIRED_COLS, min_rows=1):
+        return None
+    return read_norm(path)
 
 
 def _recover_raw_cis_hg38(
@@ -174,9 +176,23 @@ def _recover_raw_cis_hg38(
     if native_path is None:
         return None
 
-    liftover_mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
     hg38_path = _raw_cis_hg38_path(cohort, seqid)
-    liftover_mod.lift_sumstats_file(cohort, native_path, hg38_path)
+    tmp_hg38_path = hg38_path.with_name(f".{hg38_path.name}.tmp.tsv.gz")
+    if tmp_hg38_path.exists():
+        tmp_hg38_path.unlink()
+
+    try:
+        liftover_mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
+        liftover_mod.lift_sumstats_file(cohort, native_path, tmp_hg38_path)
+        if not output_exists(tmp_hg38_path, required_cols=EXPOSURE_REGION_REQUIRED_COLS, min_rows=1):
+            tmp_hg38_path.unlink(missing_ok=True)
+            return None
+        tmp_hg38_path.replace(hg38_path)
+    except Exception:
+        if tmp_hg38_path.exists():
+            tmp_hg38_path.unlink()
+        raise
+
     return read_norm(hg38_path) if hg38_path.exists() else None
 
 
