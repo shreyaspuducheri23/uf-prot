@@ -81,10 +81,17 @@ run_sensitivity <- function(harm_dt) {
     out$steiger_pval     <- steiger$steiger_pval
   }
 
-  out$passes_sensitivity <-
+  out$passes_sensitivity <- if (n_snps == 1) {
+    isTRUE(out$steiger_correct != FALSE)
+  } else if (n_snps == 2) {
     isTRUE(out$steiger_correct != FALSE) &&
-    !isTRUE(out$directional_pleiotropy) &&
-    isTRUE(out$direction_consistent != FALSE)
+      !isTRUE(out$heterogeneous)
+  } else {
+    isTRUE(out$steiger_correct != FALSE) &&
+      !isTRUE(out$heterogeneous) &&
+      !isTRUE(out$directional_pleiotropy) &&
+      !identical(out$direction_consistent, FALSE)
+  }
 
   out
 }

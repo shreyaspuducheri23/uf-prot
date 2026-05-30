@@ -105,3 +105,51 @@ run_cohort_sensitivity <- function(cohort) {
 }
 
 lapply(run_cohorts, run_cohort_sensitivity)
+
+# ── Combined cross-cohort sensitivity table + enrich mr_all_cohorts ──────────
+sens_files  <- file.path("processed_data", run_cohorts, "sensitivity.tsv")
+exists_mask <- file.exists(sens_files)
+sens_files  <- sens_files[exists_mask]
+
+if (length(sens_files) > 0) {
+  sens_all <- rbindlist(
+    mapply(function(f, cohort) {
+      dt <- fread(f, sep = "\t")
+      dt[, cohort := cohort]
+      dt
+    }, sens_files, run_cohorts[exists_mask], SIMPLIFY = FALSE),
+    fill = TRUE
+  )
+  fwrite(sens_all, "processed_data/sensitivity_all_cohorts.tsv", sep = "\t")
+  log_info("Combined sensitivity: %d rows across %d cohorts",
+           nrow(sens_all), length(sens_files))
+
+  # Enrich mr_all_cohorts.tsv: left-join sensitivity columns by (cohort, seqid)
+  mr_path <- "processed_data/mr_all_cohorts.tsv"
+  if (file.exists(mr_path)) {
+    mr_all <- fread(mr_path, sep = "\t")
+    check <- merge(
+      mr_all[, .(cohort, seqid, n_snps_mr = n_snps)],
+      sens_all[, .(cohort, seqid, n_snps_sens = n_snps)],
+      by = c("cohort", "seqid")
+    )
+    bad <- check[n_snps_mr != n_snps_sens]
+    if (nrow(bad) > 0) {
+      stop(sprintf(
+        "n_snps mismatch between MR and sensitivity for %d proteins (e.g. %s/%s: MR=%d, sens=%d)",
+        nrow(bad), bad$cohort[1], bad$seqid[1], bad$n_snps_mr[1], bad$n_snps_sens[1]
+      ))
+    }
+
+    # n_snps is already in mr_all; drop it from sens to avoid a conflict.
+    join_cols <- setdiff(names(sens_all), "n_snps")
+    # Drop any sensitivity columns that were written in a previous run.
+    mr_all <- mr_all[, setdiff(names(mr_all), setdiff(join_cols, c("cohort", "seqid"))),
+                     with = FALSE]
+    mr_all <- merge(mr_all, sens_all[, ..join_cols],
+                    by = c("cohort", "seqid"), all.x = TRUE)
+    fwrite(mr_all, mr_path, sep = "\t")
+    n_pass <- sum(mr_all$passes_sensitivity, na.rm = TRUE)
+    log_info("Enriched %s: %d/%d proteins pass sensitivity", mr_path, n_pass, nrow(mr_all))
+  }
+}
