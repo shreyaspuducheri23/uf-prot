@@ -21,6 +21,7 @@ if (length(script_arg) == 0 || is.na(script_arg)) {
 source(file.path(repo_root, "scripts", "rlib", "logging.R"))
 source(file.path(repo_root, "scripts", "rlib", "checkpoint.R"))
 source(file.path(repo_root, "scripts", "rlib", "progress.R"))
+source(file.path(repo_root, "scripts", "rlib", "coloc_align.R"))
 source(file.path(repo_root, "scripts", "rlib", "coloc_abf.R"))
 
 setup_logger("08_coloc_abf")
@@ -80,48 +81,13 @@ run_cohort_coloc <- function(cohort) {
       out_df <- fread(out_fp, sep = "\t",
                       colClasses = list(character = c("chromosome", "rsid")))
 
-      # Build allele-aware keys — chrom:pos:EA:OA uniquely identifies each allele
-      # combination. All exposure files are now in hg38 (lifted in steps 4/8a), so
-      # positions are comparable with the hg38 outcome.
-      exp_key <- paste(exp_df$chrom, exp_df$pos, exp_df$EA, exp_df$OA, sep = ":")
-
-      out_key_fwd <- paste(out_df$chromosome, out_df$base_pair_location,
-                           out_df$effect_allele, out_df$other_allele, sep = ":")
-      out_key_rev <- paste(out_df$chromosome, out_df$base_pair_location,
-                           out_df$other_allele, out_df$effect_allele, sep = ":")
-
-      # Tag each outcome row with the exposure key it matches (forward or flipped).
-      # fcase() short-circuits: forward match wins over reverse.
-      out_df[, match_key := fcase(
-        out_key_fwd %in% exp_key, out_key_fwd,
-        out_key_rev %in% exp_key, out_key_rev,
-        default = NA_character_
-      )]
-      # For reverse-matched rows, flip beta and EAF so effect direction is aligned
-      out_df[match_key != out_key_fwd & !is.na(match_key), `:=`(
-        beta                    = -beta,
-        effect_allele_frequency =  1 - effect_allele_frequency
-      )]
-      out_df <- out_df[!is.na(match_key)]
-
-      common <- intersect(
-        exp_key[!duplicated(exp_key)],
-        out_df$match_key[!duplicated(out_df$match_key)]
-      )
-      if (length(common) < 5) {
+      aligned <- align_coloc_region(exp_df, out_df)
+      if (length(aligned$snp) < 5) {
         cp <- checkpoint_mark(cp, seqid); next
       }
-
-      exp_sub     <- exp_df[!duplicated(exp_key) & exp_key %in% common]
-      exp_sub_key <- exp_key[!duplicated(exp_key) & exp_key %in% common]
-
-      out_sub     <- out_df[!duplicated(out_df$match_key) & out_df$match_key %in% common]
-      out_sub_key <- out_df$match_key[!duplicated(out_df$match_key) & out_df$match_key %in% common]
-
-      # Align both frames by sorting on the shared key
-      exp_sub <- exp_sub[order(exp_sub_key)]
-      out_sub <- out_sub[order(out_sub_key)]
-      exp_snp_key <- sort(exp_sub_key)
+      exp_sub <- aligned$exp
+      out_sub <- aligned$out
+      exp_snp_key <- aligned$snp
 
       # Infer N_exp from data
       N_exp <- if ("N" %in% names(exp_sub)) as.integer(median(exp_sub$N, na.rm = TRUE)) else 10000L
@@ -134,7 +100,7 @@ run_cohort_coloc <- function(cohort) {
           eaf    = as.numeric(exp_sub$EAF)
         ),
         out_df = data.frame(
-          snp    = sort(out_sub_key),
+          snp    = exp_snp_key,
           beta   = as.numeric(out_sub$beta),
           se     = as.numeric(out_sub$standard_error),
           eaf    = as.numeric(out_sub$effect_allele_frequency)
@@ -147,7 +113,7 @@ run_cohort_coloc <- function(cohort) {
       results[[seqid]] <- data.frame(
         cohort         = cohort,
         seqid          = seqid,
-        n_snps         = length(common),
+        n_snps         = length(exp_snp_key),
         PP_H0          = pp["PP.H0.abf"],
         PP_H1          = pp["PP.H1.abf"],
         PP_H2          = pp["PP.H2.abf"],

@@ -82,6 +82,24 @@ class TestJoinOutcomePositionMatch:
 
         assert "duplicate" in caplog.text.lower()
 
+    def test_duplicate_positions_keep_last_outcome_row_policy(self, caplog):
+        instr = _instrument_df(EA=["A"], OA=["G"])
+        compatible = _outcome_df(ea="A", oa="G")
+        incompatible = _outcome_df(ea="C", oa="T")
+        incompatible["beta"] = 0.9
+        out = pd.concat([compatible, incompatible], ignore_index=True)
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = out
+
+        with caplog.at_level("WARNING", logger="05_harmonise"):
+            result, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 0
+        assert "duplicate" in caplog.text.lower()
+        assert result["EA_out"].iloc[0] == "C"
+        assert result["OA_out"].iloc[0] == "T"
+        assert result["beta_out"].iloc[0] == pytest.approx(0.9)
+
 
 class TestJoinOutcomeProxySearch:
     def test_proxy_used_when_direct_match_missing(self):
@@ -225,6 +243,85 @@ class TestJoinOutcomeProxySearch:
         assert n_proxies == 0
         assert result.empty
 
+    def test_proxy_dropped_when_allele_set_mismatches_phase_map(self):
+        instr = _instrument_df(rsid=["rs_target"], EA=["A"], OA=["G"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = pd.DataFrame(columns=[
+            "chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "beta", "standard_error", "effect_allele_frequency", "p_value",
+            "rsid", "rs_id", "hm_coordinate_conversion", "hm_code", "variant_id",
+        ])
+        proxy_row = _outcome_df()
+        proxy_row["rsid"] = "rs_proxy"
+        proxy_row["effect_allele"] = "A"
+        proxy_row["other_allele"] = "T"
+        mock_outcome.fetch_by_rsid.return_value = proxy_row
+
+        with patch.object(_harmonise_mod, "find_proxies",
+                          return_value={"rs_target": ("rs_proxy", 0.95)}), \
+             patch.object(_harmonise_mod, "in_phase_allele_map",
+                          return_value={"A": "C", "G": "T"}):
+            result, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 0
+        assert result.empty
+
+    def test_proxy_no_flip_when_proxy_effect_allele_maps_to_target_ea(self):
+        instr = _instrument_df(rsid=["rs_target"], EA=["A"], OA=["G"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = pd.DataFrame(columns=[
+            "chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "beta", "standard_error", "effect_allele_frequency", "p_value",
+            "rsid", "rs_id", "hm_coordinate_conversion", "hm_code", "variant_id",
+        ])
+        proxy_row = _outcome_df()
+        proxy_row["rsid"] = "rs_proxy"
+        proxy_row["effect_allele"] = "C"
+        proxy_row["other_allele"] = "T"
+        proxy_row["beta"] = 0.2
+        proxy_row["effect_allele_frequency"] = 0.35
+        mock_outcome.fetch_by_rsid.return_value = proxy_row
+
+        with patch.object(_harmonise_mod, "find_proxies",
+                          return_value={"rs_target": ("rs_proxy", 0.95)}), \
+             patch.object(_harmonise_mod, "in_phase_allele_map",
+                          return_value={"A": "C", "G": "T"}):
+            result, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 1
+        assert result["beta_out"].iloc[0] == pytest.approx(0.2)
+        assert result["EAF_out"].iloc[0] == pytest.approx(0.35)
+        assert bool(result["proxy_flip"].iloc[0]) is False
+
+    def test_proxy_alignment_uppercases_lowercase_target_and_proxy_alleles(self):
+        instr = _instrument_df(rsid=["rs_target"], EA=["a"], OA=["g"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = pd.DataFrame(columns=[
+            "chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "beta", "standard_error", "effect_allele_frequency", "p_value",
+            "rsid", "rs_id", "hm_coordinate_conversion", "hm_code", "variant_id",
+        ])
+        proxy_row = _outcome_df()
+        proxy_row["rsid"] = "rs_proxy"
+        proxy_row["effect_allele"] = "g"
+        proxy_row["other_allele"] = "a"
+        proxy_row["beta"] = 0.2
+        proxy_row["effect_allele_frequency"] = 0.35
+        mock_outcome.fetch_by_rsid.return_value = proxy_row
+
+        with patch.object(_harmonise_mod, "find_proxies",
+                          return_value={"rs_target": ("rs_proxy", 0.95)}), \
+             patch.object(_harmonise_mod, "in_phase_allele_map",
+                          return_value={"A": "A", "G": "G"}):
+            result, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 1
+        assert result["EA_out"].iloc[0] == "A"
+        assert result["OA_out"].iloc[0] == "G"
+        assert result["beta_out"].iloc[0] == pytest.approx(-0.2)
+        assert result["EAF_out"].iloc[0] == pytest.approx(0.65)
+        assert bool(result["proxy_flip"].iloc[0]) is True
+
 
 class TestCallHarmoniseR:
     def test_uses_scripts_rlib_path(self):
@@ -349,6 +446,71 @@ class TestCallHarmoniseR:
 
         assert out is not None
         assert not out.empty
+
+    def test_direct_reverse_match_flows_to_r_without_python_preflip(self):
+        instr = _instrument_df(EA=["A"], OA=["G"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = _outcome_df(ea="G", oa="A")
+        joined, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 0
+
+        def fake_run(cmd, capture_output, text):
+            out_path = cmd[cmd.index("--out") + 1]
+            result_path = cmd[cmd.index("--result") + 1]
+            out_in = pd.read_csv(out_path, sep="\t")
+
+            assert out_in["EA"].iloc[0] == "G"
+            assert out_in["OA"].iloc[0] == "A"
+            assert out_in["beta"].iloc[0] == pytest.approx(0.2)
+            assert out_in["EAF"].iloc[0] == pytest.approx(0.35)
+
+            pd.DataFrame({"seqid": ["SeqId_TEST"], "rsid": ["rs123"]}).to_csv(
+                result_path, sep="\t", index=False
+            )
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        with patch.object(_harmonise_mod.subprocess, "run", side_effect=fake_run):
+            out = _harmonise_mod._call_harmonise_r(joined, "SeqId_TEST")
+
+        assert out is not None
+        assert not out.empty
+
+    def test_direct_incompatible_match_reaches_r_and_can_be_dropped(self):
+        instr = _instrument_df(EA=["A"], OA=["G"])
+        mock_outcome = MagicMock()
+        mock_outcome.fetch_snps.return_value = _outcome_df(ea="C", oa="T")
+        joined, n_proxies = _join_outcome(instr, mock_outcome)
+
+        assert n_proxies == 0
+
+        def fake_run(cmd, capture_output, text):
+            out_path = cmd[cmd.index("--out") + 1]
+            result_path = cmd[cmd.index("--result") + 1]
+            out_in = pd.read_csv(out_path, sep="\t")
+
+            assert out_in["EA"].iloc[0] == "C"
+            assert out_in["OA"].iloc[0] == "T"
+            pd.DataFrame(columns=["seqid", "rsid"]).to_csv(
+                result_path, sep="\t", index=False
+            )
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        with patch.object(_harmonise_mod.subprocess, "run", side_effect=fake_run):
+            out = _harmonise_mod._call_harmonise_r(joined, "SeqId_TEST")
+
+        assert out is not None
+        assert out.empty
 
 
 class TestRestoreMetadata:
