@@ -307,7 +307,7 @@ def real_run(tmp_path_factory):
     )
 
     return {
-        "extracted_dir": processed_dir / "ARIC_EA" / "cis_sumstats",
+        "extracted_dir": processed_dir / "ARIC_EA" / "filtered_cis_pqtls",
         "harmonised_dir": processed_dir / "ARIC_EA" / "harmonised",
     }
 

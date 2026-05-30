@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 02_cis_pqtl_extract/protonexus_unpack.py
-Phase 1: Unpack ProteoNexus tar archives → per-gene cis-window TSVs.
+Phase 1: Unpack ProteoNexus tar archives → per-gene raw cis-window TSVs.
 
 Iterates the 26 alphabetical tars from /Volumes/Extreme SSD/ProteoNexus/
 sequentially (no SSD contention), extracts each gene's
-summ_female2.assoc.txt.gz, filters to the ±500 kb cis window in-memory,
-and writes a plain TSV to processed_data/UKB_female/cis_raw/{GENE}.tsv.
+summ_female2.assoc.txt.gz, filters to the ±1 Mb cis window in-memory,
+and writes a plain TSV to processed_data/UKB_female/cis_raw_1000kb/{GENE}.tsv.
 
 Per-gene checkpointing makes it fully resumable.
 
@@ -26,6 +26,7 @@ from scripts.lib.config import add_config_arg, load_config, get_section, get_coh
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import UKB_FEMALE_DIR, UKB_FEMALE_CIS_RAW, cohort_dir
 from scripts.lib.progress import bar
+from scripts.lib.cis_extract import RAW_CIS_WINDOW_KB
 
 log = setup_logger("02e_prep_protonexus_unpack")
 
@@ -66,7 +67,7 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
     UKB_FEMALE_CIS_RAW.mkdir(parents=True, exist_ok=True)
     cohort_dir(COHORT).mkdir(parents=True, exist_ok=True)
 
-    cp = Checkpoint(cohort_dir(COHORT) / "_state_02_unpack.json")
+    cp = Checkpoint(cohort_dir(COHORT) / f"_state_02_unpack_{window_kb}kb.json")
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
     tss_cache = _load_tss_cache(tss_cache_path)
 
@@ -193,7 +194,7 @@ def main() -> None:
     cfg = load_config(args.config)
     cis_cfg = get_section(cfg, "cis_extract")
     build = get_cohort_build(cfg, COHORT)
-    window_kb = cis_cfg["window_kb"]
+    window_kb = RAW_CIS_WINDOW_KB
 
     with RunManifest("02_cis_pqtl_extract/protonexus_unpack.py") as manifest:
         n = run_unpack(limit=args.limit, window_kb=window_kb, build=build)

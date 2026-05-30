@@ -8,6 +8,7 @@ Usage:
   python scripts/08_coloc/extract_regions.py [--cohort ARIC_EA] [--limit N]
 """
 import argparse
+import importlib
 
 import pandas as pd
 
@@ -17,12 +18,13 @@ from scripts.lib.decode_stream import (
     _get_s3_client, stream_s3_cis_rows,
     DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
 )
-from scripts.lib.liftover import lift_position, lift_table
+from scripts.lib.cis_extract import RAW_CIS_WINDOW_KB, write_raw_cis_cache
+from scripts.lib.liftover import lift_position
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.outcome import OutcomeLookup
 from scripts.lib.paths import (
     ARIC_EA_DIR, COHORTS, COLOC_REGIONS_DIR,
-    cohort_dir, cis_sumstats_hg38_dir,
+    cohort_dir, raw_cis_sumstats_hg38_dir,
 )
 from scripts.lib.progress import bar
 from scripts.lib.sumstats_io import read_norm, write_norm
@@ -131,6 +133,99 @@ def extract_decode_region_s3(
     return df if not df.empty else None
 
 
+def _raw_cis_hg38_path(cohort: str, seqid: str):
+    return raw_cis_sumstats_hg38_dir(cohort) / f"{seqid}.tsv.gz"
+
+
+def _load_raw_cis_hg38(cohort: str, seqid: str) -> pd.DataFrame | None:
+    path = _raw_cis_hg38_path(cohort, seqid)
+    return read_norm(path) if path.exists() else None
+
+
+def _recover_raw_cis_hg38(
+    cohort: str,
+    seqid: str,
+    chrom: str,
+    tss: int,
+    build: str,
+    gene: str = "",
+    uniprot: str = "",
+    s3_client=None,
+    s3_key_map: dict[str, str] | None = None,
+) -> pd.DataFrame | None:
+    """Recover one missing lifted raw cis cache file."""
+    from scripts.lib.schema import ProteinMeta
+
+    protein = ProteinMeta(
+        seqid=seqid,
+        gene=gene,
+        uniprot=uniprot,
+        chrom=str(chrom),
+        tss=int(tss),
+        build=str(build),
+        source_cohort=cohort,
+    )
+
+    raw = _extract_raw_native_region(cohort, protein, s3_client=s3_client, s3_key_map=s3_key_map or {})
+    if raw is None or raw.empty:
+        return None
+
+    native_path = write_raw_cis_cache(cohort, protein, raw)
+    if native_path is None:
+        return None
+
+    liftover_mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
+    hg38_path = _raw_cis_hg38_path(cohort, seqid)
+    liftover_mod.lift_sumstats_file(cohort, native_path, hg38_path)
+    return read_norm(hg38_path) if hg38_path.exists() else None
+
+
+def _extract_raw_native_region(
+    cohort: str,
+    protein,
+    s3_client=None,
+    s3_key_map: dict[str, str] | None = None,
+) -> pd.DataFrame | None:
+    if cohort == "ARIC_EA":
+        aric = importlib.import_module("scripts.02_cis_pqtl_extract.aric")
+        return aric.read_aric_protein(protein)
+
+    if cohort == "deCODE":
+        client = s3_client
+        if client is None:
+            client = _get_s3_client(DECODE_S3_ENDPOINT, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY)
+        key_map = s3_key_map or _load_decode_s3_key_index(cohort_dir(cohort))
+        return extract_decode_region_s3(
+            protein.seqid,
+            client,
+            key_map,
+            protein.chrom,
+            protein.tss,
+            window_bp=RAW_CIS_WINDOW_KB * 1_000,
+        )
+
+    if cohort == "UKB_PPP":
+        ukb = importlib.import_module("scripts.02_cis_pqtl_extract.ukbppp")
+        manifest = ukb.load_ukbppp_manifest()
+        _proteins, entity_map = ukb.build_protein_list(manifest, build=protein.build)
+        read_fn = ukb.build_read_fn(entity_map, window_kb=RAW_CIS_WINDOW_KB)
+        return read_fn(protein)
+
+    if cohort == "Fenland":
+        fenland = importlib.import_module("scripts.02_cis_pqtl_extract.fenland")
+        protein_files = fenland.load_fenland_manifest()
+        _proteins, entity_map = fenland.build_protein_list(protein_files, build=protein.build)
+        start, end = cis_window_bounds(protein.tss, kb=RAW_CIS_WINDOW_KB)
+        return fenland.read_fenland_protein(protein, entity_map, start, end)
+
+    if cohort == "UKB_female":
+        ukb_female = importlib.import_module("scripts.02_cis_pqtl_extract.ukb_female")
+        read_fn = ukb_female.build_read_fn()
+        return read_fn(protein)
+
+    return None
+
+
 def _to_hg38_region(chrom: str, start: int, end: int, build: str) -> tuple[str, int, int] | None:
     build_norm = str(build).lower()
     if build_norm in {"hg38", "grch38"}:
@@ -165,8 +260,16 @@ def extract_cohort_regions(
         log.warning(f"{cohort}: protein_index.tsv not found")
         return 0
     index = pd.read_csv(index_path, sep="\t", dtype=str)
-    tss_map = {row["seqid"]: (str(row["chrom"]), int(row["tss"]), row["build"])
-               for _, row in index.iterrows()}
+    tss_map = {
+        row["seqid"]: (
+            str(row["chrom"]),
+            int(row["tss"]),
+            row["build"],
+            str(row.get("gene", "")),
+            str(row.get("uniprot", "")),
+        )
+        for _, row in index.iterrows()
+    }
 
     cp = Checkpoint(cohort_dir(cohort) / "_state_08_regions.json")
     todo = cp.remaining(candidates, include_failed=retry_failed)
@@ -186,7 +289,7 @@ def extract_cohort_regions(
                     cp.mark_failed(seqid, "seqid_not_in_protein_index")
                     continue
 
-                chrom, tss, build = tss_map[seqid]
+                chrom, tss, build, gene, uniprot = tss_map[seqid]
                 start, end = cis_window_bounds(tss, kb=1000)
 
                 out_dir = COLOC_REGIONS_DIR / cohort / seqid
@@ -201,16 +304,20 @@ def extract_cohort_regions(
                     n_ok += 1
                     continue
 
-                # Extract exposure cis region
-                if cohort == "ARIC_EA":
-                    exp_df = extract_aric_region(seqid, chrom, start, end)
-                elif cohort == "deCODE":
-                    exp_df = extract_decode_region_s3(seqid, s3_client, s3_key_map, chrom, tss, window_bp=1_000_000)
-                else:
-                    log.warning(f"Region re-extraction for {cohort} not yet implemented (use cached sumstats)")
-                    # Fall back to pre-filtered cis_sumstats_hg38 (positions already in hg38)
-                    cis_path = cis_sumstats_hg38_dir(cohort) / f"{seqid}.tsv"
-                    exp_df = read_norm(cis_path) if cis_path.exists() else None
+                exp_df = _load_raw_cis_hg38(cohort, seqid)
+                if exp_df is None:
+                    log.warning(f"{cohort} {seqid}: raw_cis_sumstats_hg38 missing — recovering one protein")
+                    exp_df = _recover_raw_cis_hg38(
+                        cohort,
+                        seqid,
+                        chrom,
+                        tss,
+                        build,
+                        gene=gene,
+                        uniprot=uniprot,
+                        s3_client=s3_client,
+                        s3_key_map=s3_key_map,
+                    )
 
                 if exp_df is None or exp_df.empty:
                     cp.mark_failed(seqid, "no_exposure_region_variants")

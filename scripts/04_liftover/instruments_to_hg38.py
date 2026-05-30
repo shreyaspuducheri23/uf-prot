@@ -16,7 +16,16 @@ from scripts.lib.checkpoint import Checkpoint, output_exists
 from scripts.lib.config import add_config_arg, load_config
 from scripts.lib.liftover import lift_table
 from scripts.lib.logging import setup_logger, RunManifest
-from scripts.lib.paths import COHORTS, cohort_dir, cis_sumstats_dir, cis_sumstats_hg38_dir, instruments_dir, instruments_hg38_dir
+from scripts.lib.paths import (
+    COHORTS,
+    cohort_dir,
+    filtered_cis_pqtls_dir,
+    filtered_cis_pqtls_hg38_dir,
+    instruments_dir,
+    instruments_hg38_dir,
+    raw_cis_sumstats_dir,
+    raw_cis_sumstats_hg38_dir,
+)
 from scripts.lib.progress import bar
 from scripts.lib.sumstats_io import read_norm, write_norm
 
@@ -26,9 +35,17 @@ log = setup_logger("04_liftover")
 # ARIC .glm.linear and deCODE positions are already hg38; do not lift.
 HG38_COHORTS = {"deCODE", "ARIC_EA"}
 
-# Cohorts whose cis_sumstats positions are already in hg38.
+# Cohorts whose cis summary-statistic positions are already in hg38.
 CIS_HG38_COHORTS = {"deCODE", "ARIC_EA"}
 LIFTED_REQUIRED_COLS = ["seqid", "chrom", "pos", "chrom_hg38", "pos_hg38"]
+
+
+def _seqid_from_sumstats_path(path) -> str:
+    name = path.name
+    for suffix in (".tsv.gz", ".tsv"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
 
 
 def lift_cohort(cohort: str, limit: int | None = None) -> int:
@@ -91,64 +108,97 @@ def lift_cohort(cohort: str, limit: int | None = None) -> int:
     return n_ok
 
 
-def lift_cis_sumstats_cohort(cohort: str, limit: int | None = None) -> int:
-    """Lift all cis_sumstats files to hg38, writing to cis_sumstats_hg38/.
+def lift_sumstats_file(cohort: str, in_path, out_path) -> int:
+    """Lift or pass through one cis summary-statistics file."""
+    df = read_norm(in_path)
+    if df.empty:
+        return 0
 
-    hg19 cohorts: positions are lifted via lift_table().
-    hg38 cohorts (ARIC_EA, deCODE): files are passed through unchanged.
-    Uses a separate checkpoint (_state_04_cis.json) so the instrument
-    checkpoint (_state_04.json) is not disturbed.
-    """
-    in_dir  = cis_sumstats_dir(cohort)
-    out_dir = cis_sumstats_hg38_dir(cohort)
+    n_in = len(df)
+    if cohort not in CIS_HG38_COHORTS:
+        df = lift_table(df, chrom_col="chrom", pos_col="pos")
+        # lift_table adds chrom_hg38/pos_hg38; overwrite chrom/pos in place.
+        df["chrom"] = df.pop("chrom_hg38")
+        df["pos"] = df.pop("pos_hg38").astype(int)
+
+    write_norm(df, out_path)
+    return n_in - len(df)
+
+
+def _lift_cis_sumstats_family(
+    cohort: str,
+    in_dir,
+    out_dir,
+    state_name: str,
+    label: str,
+    limit: int | None = None,
+) -> int:
+    """Lift a family of cis summary-statistics files to hg38."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tsv_files = sorted(in_dir.glob("*.tsv"))
+    tsv_files = sorted([*in_dir.glob("*.tsv"), *in_dir.glob("*.tsv.gz")])
     if limit:
         tsv_files = tsv_files[:limit]
 
-    cp = Checkpoint(cohort_dir(cohort) / "_state_04_cis.json")
-    todo = [f for f in tsv_files if not cp.is_done(f.stem)]
+    cp = Checkpoint(cohort_dir(cohort) / state_name)
+    todo = [f for f in tsv_files if not cp.is_done(_seqid_from_sumstats_path(f))]
 
-    log.info(f"{cohort}: {len(tsv_files)} cis_sumstats files, {len(todo)} to lift")
+    log.info(f"{cohort}: {len(tsv_files)} {label} files, {len(todo)} to lift")
     n_ok = 0
     total_dropped = 0
 
-    for tsv_path in bar(todo, desc=f"{cohort} cis_sumstats liftover"):
-        seqid    = tsv_path.stem
-        out_path = out_dir / f"{seqid}.tsv"
+    for tsv_path in bar(todo, desc=f"{cohort} {label} liftover"):
+        seqid = _seqid_from_sumstats_path(tsv_path)
+        suffix = ".tsv.gz" if tsv_path.name.endswith(".tsv.gz") else ".tsv"
+        out_path = out_dir / f"{seqid}{suffix}"
 
         if output_exists(out_path, required_cols=["chrom", "pos"], min_rows=1):
             cp.mark_done(seqid)
             n_ok += 1
             continue
 
-        df = read_norm(tsv_path)
-        if df.empty:
+        try:
+            dropped = lift_sumstats_file(cohort, tsv_path, out_path)
+        except pd.errors.EmptyDataError:
             cp.mark_done(seqid)
             continue
 
-        n_in = len(df)
-
-        if cohort in CIS_HG38_COHORTS:
-            pass  # positions already hg38 — write as-is
-        else:
-            df = lift_table(df, chrom_col="chrom", pos_col="pos")
-            # lift_table adds chrom_hg38/pos_hg38; overwrite chrom/pos in place
-            df["chrom"] = df.pop("chrom_hg38")
-            df["pos"]   = df.pop("pos_hg38").astype(int)
-
-        dropped = n_in - len(df)
         if dropped:
-            log.debug(f"{seqid}: {dropped}/{n_in} rows dropped in cis_sumstats liftover")
+            log.debug(f"{seqid}: {dropped} rows dropped in {label} liftover")
             total_dropped += dropped
 
-        write_norm(df, out_path)
         cp.mark_done(seqid)
         n_ok += 1
 
-    log.info(f"{cohort}: cis_sumstats liftover done. {n_ok} files. Total rows dropped: {total_dropped}")
+    log.info(f"{cohort}: {label} liftover done. {n_ok} files. Total rows dropped: {total_dropped}")
     return n_ok
+
+
+def lift_filtered_cis_pqtls_cohort(cohort: str, limit: int | None = None) -> int:
+    return _lift_cis_sumstats_family(
+        cohort,
+        filtered_cis_pqtls_dir(cohort),
+        filtered_cis_pqtls_hg38_dir(cohort),
+        "_state_04_filtered_cis.json",
+        "filtered_cis_pqtls",
+        limit=limit,
+    )
+
+
+def lift_raw_cis_sumstats_cohort(cohort: str, limit: int | None = None) -> int:
+    return _lift_cis_sumstats_family(
+        cohort,
+        raw_cis_sumstats_dir(cohort),
+        raw_cis_sumstats_hg38_dir(cohort),
+        "_state_04_raw_cis.json",
+        "raw_cis_sumstats",
+        limit=limit,
+    )
+
+
+def lift_cis_sumstats_cohort(cohort: str, limit: int | None = None) -> int:
+    """Compatibility wrapper for the filtered MR-ready cis-pQTL product."""
+    return lift_filtered_cis_pqtls_cohort(cohort, limit=limit)
 
 
 def main() -> None:
@@ -163,7 +213,8 @@ def main() -> None:
 
     with RunManifest("04_liftover/instruments_to_hg38.py", args=str(args)) as manifest:
         total  = sum(lift_cohort(c, limit=args.limit) for c in cohorts)
-        total += sum(lift_cis_sumstats_cohort(c, limit=args.limit) for c in cohorts)
+        total += sum(lift_filtered_cis_pqtls_cohort(c, limit=args.limit) for c in cohorts)
+        total += sum(lift_raw_cis_sumstats_cohort(c, limit=args.limit) for c in cohorts)
         manifest.n_units = total
 
 

@@ -114,8 +114,10 @@ class TestApplyFiltersAllSix:
     def test_variant_with_zero_survivors_checkpointed(self, tmp_path, sample_protein):
         """Proteins with 0 variants after filtering should still be checkpointed."""
         cohort = "ARIC_EA"
-        out_dir = tmp_path / "cis_sumstats"
-        out_dir.mkdir(parents=True)
+        filtered_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
+        filtered_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
         cp_dir = tmp_path / "cohort_state"
         cp_dir.mkdir(parents=True)
 
@@ -126,37 +128,166 @@ class TestApplyFiltersAllSix:
                 "beta": [0.5], "se": [0.05], "pval": [1e-9], "N": [7213],
             })
 
-        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
              patch("scripts.lib.cis_extract.cohort_dir", return_value=cp_dir):
             n_ok = run_extraction(cohort, [sample_protein], read_fn)
 
         assert n_ok == 0  # no cis-pQTL proteins
         # Output file should NOT exist (protein was empty after filters)
-        assert not (out_dir / f"{sample_protein.seqid}.tsv").exists()
+        assert not (filtered_dir / f"{sample_protein.seqid}.tsv").exists()
+        assert not (raw_dir / f"{sample_protein.seqid}.tsv.gz").exists()
 
 
 class TestRunExtraction:
+    def test_raw_and_filtered_outputs_split_from_one_read(self, tmp_path, sample_protein):
+        cohort = "Fenland"
+        filtered_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
+        state_dir = tmp_path / "state"
+        filtered_dir.mkdir()
+        raw_dir.mkdir()
+        state_dir.mkdir()
+        calls = {"n": 0}
+
+        def read_fn(_p):
+            calls["n"] += 1
+            return pd.DataFrame({
+                "chrom": ["22", "22", "22", "22", "22"],
+                "pos": [
+                    sample_protein.tss,
+                    sample_protein.tss + 600_000,  # raw ±1 Mb only
+                    sample_protein.tss + 1_100_000,  # outside raw window
+                    sample_protein.tss + 10_000,  # low MAF
+                    sample_protein.tss + 20_000,  # ambiguous palindrome
+                ],
+                "rsid": ["rs_keep", "rs_region", "rs_outside", "rs_lowmaf", "rs_pal"],
+                "EA": ["A", "C", "G", "A", "A"],
+                "OA": ["G", "T", "A", "G", "T"],
+                "EAF": [0.3, 0.25, 0.3, 0.001, 0.5],
+                "beta": [0.5, 0.2, 0.1, 0.5, 0.5],
+                "se": [0.05, 0.02, 0.01, 0.05, 0.05],
+                "pval": [1e-9, 0.2, 1e-9, 1e-9, 1e-9],
+                "N": [7213] * 5,
+            })
+
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            n_ok = run_extraction(cohort, [sample_protein], read_fn)
+
+        assert n_ok == 1
+        assert calls["n"] == 1
+        raw = pd.read_csv(raw_dir / f"{sample_protein.seqid}.tsv.gz", sep="\t")
+        filtered = pd.read_csv(filtered_dir / f"{sample_protein.seqid}.tsv", sep="\t")
+        assert set(raw["rsid"]) == {"rs_keep", "rs_region", "rs_lowmaf", "rs_pal"}
+        assert set(filtered["rsid"]) == {"rs_keep"}
+
+    def test_raw_cache_keeps_mhc_rows_even_when_filtered_empty(self, tmp_path):
+        cohort = "Fenland"
+        protein = ProteinMeta(
+            seqid="SeqId_MHC_RAW",
+            gene="MHCGENE",
+            uniprot="P1",
+            chrom="6",
+            tss=29_000_000,
+            build="hg19",
+            source_cohort=cohort,
+        )
+        filtered_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
+        state_dir = tmp_path / "state"
+        filtered_dir.mkdir()
+        raw_dir.mkdir()
+        state_dir.mkdir()
+
+        def read_fn(_p):
+            return pd.DataFrame({
+                "chrom": ["6"],
+                "pos": [29_000_000],
+                "rsid": ["rs_mhc"],
+                "EA": ["A"],
+                "OA": ["G"],
+                "EAF": [0.3],
+                "beta": [0.5],
+                "se": [0.05],
+                "pval": [1e-9],
+                "N": [7213],
+            })
+
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            n_ok = run_extraction(cohort, [protein], read_fn)
+
+        assert n_ok == 0
+        raw = pd.read_csv(raw_dir / f"{protein.seqid}.tsv.gz", sep="\t")
+        assert set(raw["rsid"]) == {"rs_mhc"}
+        assert not (filtered_dir / f"{protein.seqid}.tsv").exists()
+
     def test_checkpointing_skips_done(self, tmp_path, sample_protein):
         """Proteins already in checkpoint should not call read_fn."""
         cohort = "ARIC_EA"
-        out_dir = tmp_path / "processed_data" / cohort / "cis_sumstats"
-        out_dir.mkdir(parents=True)
+        filtered_dir = tmp_path / "processed_data" / cohort / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "processed_data" / cohort / "raw_cis_sumstats"
+        filtered_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
 
         # Pre-create a minimally valid output file to simulate completed protein
         pd.DataFrame(
             [{col: "x" for col in OUTPUT_COLS}]
-        ).to_csv(out_dir / f"{sample_protein.seqid}.tsv", sep="\t", index=False)
+        ).to_csv(filtered_dir / f"{sample_protein.seqid}.tsv", sep="\t", index=False)
+        pd.DataFrame(
+            [{col: "x" for col in OUTPUT_COLS}]
+        ).to_csv(raw_dir / f"{sample_protein.seqid}.tsv.gz", sep="\t", index=False)
 
         call_count = {"n": 0}
         def read_fn(p):
             call_count["n"] += 1
             return None
 
-        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
              patch("scripts.lib.cis_extract.cohort_dir", return_value=tmp_path / "processed_data" / cohort):
             run_extraction(cohort, [sample_protein], read_fn)
 
         # read_fn should not have been called since output exists
+        assert call_count["n"] == 0
+
+    def test_checkpointed_empty_raw_does_not_reenter_todo(self, tmp_path, sample_protein):
+        """A done protein with no raw file can represent a true empty ±1 Mb region."""
+        cohort = "ARIC_EA"
+        filtered_dir = tmp_path / "processed_data" / cohort / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "processed_data" / cohort / "raw_cis_sumstats"
+        state_dir = tmp_path / "processed_data" / cohort
+        filtered_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        Checkpoint(state_dir / "_state_02.json").mark_done(sample_protein.seqid)
+
+        call_count = {"n": 0}
+
+        def read_fn(_p):
+            call_count["n"] += 1
+            return pd.DataFrame({
+                "chrom": ["22"],
+                "pos": [sample_protein.tss],
+                "rsid": ["rs1"],
+                "EA": ["A"],
+                "OA": ["G"],
+                "EAF": [0.3],
+                "beta": [0.5],
+                "se": [0.05],
+                "pval": [1e-9],
+                "N": [7213],
+            })
+
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=filtered_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
+             patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
+            n_ok = run_extraction(cohort, [sample_protein], read_fn)
+
+        assert n_ok == 0
         assert call_count["n"] == 0
 
     def test_parallel_workers_produce_same_result(self, tmp_path, sample_protein):
@@ -164,7 +295,7 @@ class TestRunExtraction:
         cohort = "ARIC_EA"
 
         def make_out_dir(suffix):
-            d = tmp_path / f"cis_sumstats_{suffix}"
+            d = tmp_path / f"filtered_cis_pqtls_{suffix}"
             d.mkdir(parents=True)
             return d
 
@@ -178,25 +309,33 @@ class TestRunExtraction:
 
         for workers in (1, 2):
             out_dir = make_out_dir(workers)
-            with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+            raw_dir = tmp_path / f"raw_cis_sumstats_{workers}"
+            raw_dir.mkdir(parents=True)
+            with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=out_dir), \
+                 patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
                  patch("scripts.lib.cis_extract.cohort_dir",
                        return_value=tmp_path / f"state_{workers}"):
                 run_extraction(cohort, [sample_protein], make_read_fn(), workers=workers)
             files = list(out_dir.glob("*.tsv"))
             assert len(files) == 1, f"workers={workers}: expected 1 output file"
+            raw_files = list(raw_dir.glob("*.tsv.gz"))
+            assert len(raw_files) == 1, f"workers={workers}: expected 1 raw output file"
 
     def test_read_failure_tracked_in_checkpoint_sequential(self, tmp_path, sample_protein):
         """read_fn raising → protein appears in cp.n_failed (sequential path)."""
         cohort = "ARIC_EA"
-        out_dir = tmp_path / "cis_sumstats"
+        out_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
         state_dir = tmp_path / "processed_data" / cohort
         out_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
         state_dir.mkdir(parents=True)
 
         def read_fn(p):
             raise IOError("simulated read error")
 
-        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
              patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
             n_ok = run_extraction(cohort, [sample_protein], read_fn, workers=1)
 
@@ -208,15 +347,18 @@ class TestRunExtraction:
     def test_read_failure_tracked_in_checkpoint_parallel(self, tmp_path, sample_protein):
         """read_fn raising → protein appears in cp.n_failed (parallel path)."""
         cohort = "ARIC_EA"
-        out_dir = tmp_path / "cis_sumstats"
+        out_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
         state_dir = tmp_path / "processed_data" / cohort
         out_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
         state_dir.mkdir(parents=True)
 
         def read_fn(p):
             raise IOError("simulated read error")
 
-        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
              patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
             n_ok = run_extraction(cohort, [sample_protein], read_fn, workers=2)
 
@@ -227,9 +369,11 @@ class TestRunExtraction:
 
     def test_parallel_writes_protein_index(self, tmp_path, sample_protein):
         cohort = "ARIC_EA"
-        out_dir = tmp_path / "cis_sumstats"
+        out_dir = tmp_path / "filtered_cis_pqtls"
+        raw_dir = tmp_path / "raw_cis_sumstats"
         state_dir = tmp_path / "processed_data" / cohort
         out_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
         state_dir.mkdir(parents=True, exist_ok=True)
 
         def read_fn(_p):
@@ -246,7 +390,8 @@ class TestRunExtraction:
                 "N": [7213],
             })
 
-        with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+        with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=out_dir), \
+             patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
              patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
             run_extraction(cohort, [sample_protein], read_fn, workers=2)
 

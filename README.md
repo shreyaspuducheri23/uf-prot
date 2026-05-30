@@ -194,7 +194,11 @@ scripts/
 
 processed_data/
   {ARIC_EA,deCODE,UKB_PPP,Fenland}/
-    cis_sumstats/           # per-protein filtered cis-pQTL TSVs (step 02)
+    raw_cis_sumstats/       # per-protein unfiltered ±1 Mb TSS-window TSV.GZ files (step 02)
+    filtered_cis_pqtls/     # per-protein MR-ready filtered cis-pQTL TSVs (step 02)
+    cis_raw_1000kb/         # UKB_female ProteoNexus intermediate raw native files
+    raw_cis_sumstats_hg38/  # lifted raw regional files for coloc (step 04)
+    filtered_cis_pqtls_hg38/# lifted filtered cis-pQTL files (step 04)
     instruments/            # post-clumping independent instruments (step 03)
     instruments_hg38/       # after GRCh38 liftover (step 04)
     harmonised/             # after harmonisation with Kim (step 05)

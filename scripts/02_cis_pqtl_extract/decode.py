@@ -35,7 +35,7 @@ from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import DECODE_URLS, cohort_dir
 from scripts.lib.progress import bar
 from scripts.lib.schema import ProteinMeta
-from scripts.lib.cis_extract import run_extraction
+from scripts.lib.cis_extract import RAW_CIS_WINDOW_KB, run_extraction
 
 log = setup_logger("02_decode")
 
@@ -46,8 +46,7 @@ _REQUIRED_COLS = {
     "ImpMAF",
 }
 _FAST_PARSER_COLS = frozenset(_REQUIRED_COLS)
-_prefilter_window_bp = 500_000
-_prefilter_pval = 5e-8
+_prefilter_window_bp = RAW_CIS_WINDOW_KB * 1_000
 
 _S3_ENDPOINT   = DECODE_S3_ENDPOINT
 _S3_BUCKET     = DECODE_S3_BUCKET
@@ -222,12 +221,6 @@ def read_decode_protein(protein: ProteinMeta, n_default: int | None = _DEFAULT_N
     df["pval"] = pd.to_numeric(df["pval"], errors="coerce")
     df["EAF"] = pd.to_numeric(df["EAF"], errors="coerce")
 
-    in_cis = df["chrom"].eq(str(protein.chrom)) & (df["pos"] - protein.tss).abs().le(_prefilter_window_bp)
-    gw_sig = df["pval"] < _prefilter_pval
-    df = df[in_cis & gw_sig]
-    if df.empty:
-        return None
-
     if "N" in df.columns:
         n = pd.to_numeric(df["N"], errors="coerce")
         if n_default is None and n.isna().any():
@@ -262,12 +255,11 @@ def main() -> None:
     norm_cfg = _NORM_CONFIG[args.normalization]
 
     with RunManifest("02_cis_pqtl_extract/decode.py") as manifest:
-        global COHORT, _s3_key_map, _prefilter_pval, _prefilter_window_bp
+        global COHORT, _s3_key_map, _prefilter_window_bp
         COHORT = norm_cfg["cohort"]
         build = get_cohort_build(cfg, COHORT) if COHORT in cfg["cohorts"] else BUILD
         n_default = get_cohort_sample_size(cfg, COHORT) if COHORT in cfg["cohorts"] else _DEFAULT_N
-        _prefilter_pval = float(cis_cfg["pval_gw"])
-        _prefilter_window_bp = int(cis_cfg["window_kb"]) * 1_000
+        _prefilter_window_bp = RAW_CIS_WINDOW_KB * 1_000
 
         _s3_key_map = _build_s3_key_index(norm_cfg["prefix"], norm_cfg["pattern"])
 

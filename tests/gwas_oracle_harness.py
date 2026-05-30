@@ -130,17 +130,18 @@ def run_oracle_pipeline(
         "palindrome_maf_max": 0.42,
     }
 
-    cis_dir = cohort_root / "cis_sumstats"
-    with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=cis_dir), patch(
-        "scripts.lib.cis_extract.cohort_dir", return_value=cohort_root
-    ):
+    cis_dir = cohort_root / "filtered_cis_pqtls"
+    raw_cis_dir = cohort_root / "raw_cis_sumstats"
+    with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=cis_dir), patch(
+        "scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_cis_dir
+    ), patch("scripts.lib.cis_extract.cohort_dir", return_value=cohort_root):
         run_extraction(cohort, proteins, read_fn, cfg=cis_cfg)
 
     def fake_clump(df: pd.DataFrame, seqid: str, **kwargs) -> pd.DataFrame:
         return df.sort_values("pval", kind="stable").head(3).copy()
 
     inst_dir = cohort_root / "instruments"
-    with patch.object(_clump_mod, "cis_sumstats_dir", return_value=cis_dir), patch.object(
+    with patch.object(_clump_mod, "filtered_cis_pqtls_dir", return_value=cis_dir), patch.object(
         _clump_mod, "instruments_dir", return_value=inst_dir
     ), patch.object(_clump_mod, "cohort_dir", return_value=cohort_root), patch.object(
         _clump_mod, "clump", side_effect=fake_clump

@@ -100,9 +100,11 @@ def test_run_extraction_emits_configured_build_label(tmp_path, pipeline_cfg, coh
             "N": [1000],
         })
 
-    out_dir = tmp_path / cohort / "cis_sumstats"
+    out_dir = tmp_path / cohort / "filtered_cis_pqtls"
+    raw_dir = tmp_path / cohort / "raw_cis_sumstats"
     state_dir = tmp_path / cohort
-    with patch("scripts.lib.cis_extract.cis_sumstats_dir", return_value=out_dir), \
+    with patch("scripts.lib.cis_extract.filtered_cis_pqtls_dir", return_value=out_dir), \
+         patch("scripts.lib.cis_extract.raw_cis_sumstats_dir", return_value=raw_dir), \
          patch("scripts.lib.cis_extract.cohort_dir", return_value=state_dir):
         n = run_extraction(cohort, [protein], read_fn, cfg=pipeline_cfg["cis_extract"])
 
@@ -196,13 +198,13 @@ def test_processed_build_labels_match_config_when_present(pipeline_cfg, cohort):
         idx = pd.read_csv(idx_path, sep="\t", dtype=str)
         assert set(idx["build"].dropna()) == {expected}
 
-    cis_dir = cohort_path / "cis_sumstats"
+    cis_dir = cohort_path / "filtered_cis_pqtls"
     if not cis_dir.exists():
-        pytest.skip(f"{cohort}: cis_sumstats dir missing")
+        pytest.skip(f"{cohort}: filtered_cis_pqtls dir missing")
 
     files = sorted(cis_dir.glob("*.tsv"))[:10]
     if not files:
-        pytest.skip(f"{cohort}: no cis_sumstats files")
+        pytest.skip(f"{cohort}: no filtered_cis_pqtls files")
 
     for path in files:
         df = pd.read_csv(path, sep="\t", dtype=str)

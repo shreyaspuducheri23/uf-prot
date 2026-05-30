@@ -37,7 +37,7 @@ def _make_clump_output(rsids: list[str]) -> pd.DataFrame:
 class TestClumpCohort:
     def test_single_protein_produces_instrument_tsv(self, tmp_path):
         seqid = "SeqId_TEST"
-        in_dir = tmp_path / "cis_sumstats"
+        in_dir = tmp_path / "filtered_cis_pqtls"
         out_dir = tmp_path / "instruments"
         state_dir = tmp_path / "state"
         in_dir.mkdir()
@@ -48,7 +48,7 @@ class TestClumpCohort:
         def fake_clump(df, seqid_arg, **kwargs):
             return df.iloc[:1].copy()
 
-        with patch.object(_clump_mod, "cis_sumstats_dir", return_value=in_dir), \
+        with patch.object(_clump_mod, "filtered_cis_pqtls_dir", return_value=in_dir), \
              patch.object(_clump_mod, "instruments_dir", return_value=out_dir), \
              patch.object(_clump_mod, "cohort_dir", return_value=state_dir), \
              patch.object(_clump_mod, "clump", side_effect=fake_clump):
@@ -62,7 +62,7 @@ class TestClumpCohort:
 
     def test_zero_cis_pqtls_protein_skipped_gracefully(self, tmp_path):
         seqid = "SeqId_EMPTY"
-        in_dir = tmp_path / "cis_sumstats"
+        in_dir = tmp_path / "filtered_cis_pqtls"
         out_dir = tmp_path / "instruments"
         state_dir = tmp_path / "state"
         in_dir.mkdir()
@@ -76,7 +76,7 @@ class TestClumpCohort:
         })
         (in_dir / f"{seqid}.tsv").write_text(df.to_csv(sep="\t", index=False))
 
-        with patch.object(_clump_mod, "cis_sumstats_dir", return_value=in_dir), \
+        with patch.object(_clump_mod, "filtered_cis_pqtls_dir", return_value=in_dir), \
              patch.object(_clump_mod, "instruments_dir", return_value=out_dir), \
              patch.object(_clump_mod, "cohort_dir", return_value=state_dir):
             n = clump_cohort("ARIC_EA")
@@ -86,7 +86,7 @@ class TestClumpCohort:
 
     def test_weak_instrument_flagged_not_dropped(self, tmp_path):
         seqid = "SeqId_WEAK"
-        in_dir = tmp_path / "cis_sumstats"
+        in_dir = tmp_path / "filtered_cis_pqtls"
         out_dir = tmp_path / "instruments"
         state_dir = tmp_path / "state"
         in_dir.mkdir()
@@ -105,7 +105,7 @@ class TestClumpCohort:
         def fake_clump(df_in, seqid_arg, **kwargs):
             return df_in.copy()
 
-        with patch.object(_clump_mod, "cis_sumstats_dir", return_value=in_dir), \
+        with patch.object(_clump_mod, "filtered_cis_pqtls_dir", return_value=in_dir), \
              patch.object(_clump_mod, "instruments_dir", return_value=out_dir), \
              patch.object(_clump_mod, "cohort_dir", return_value=state_dir), \
              patch.object(_clump_mod, "clump", side_effect=fake_clump):
@@ -118,7 +118,7 @@ class TestClumpCohort:
 
     def test_clump_config_passed_to_plink_wrapper(self, tmp_path):
         seqid = "SeqId_CFG"
-        in_dir = tmp_path / "cis_sumstats"
+        in_dir = tmp_path / "filtered_cis_pqtls"
         out_dir = tmp_path / "instruments"
         state_dir = tmp_path / "state"
         in_dir.mkdir()
@@ -131,7 +131,7 @@ class TestClumpCohort:
             seen.update(kwargs)
             return df.iloc[:1].copy()
 
-        with patch.object(_clump_mod, "cis_sumstats_dir", return_value=in_dir), \
+        with patch.object(_clump_mod, "filtered_cis_pqtls_dir", return_value=in_dir), \
              patch.object(_clump_mod, "instruments_dir", return_value=out_dir), \
              patch.object(_clump_mod, "cohort_dir", return_value=state_dir), \
              patch.object(_clump_mod, "clump", side_effect=fake_clump):

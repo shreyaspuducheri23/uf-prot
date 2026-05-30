@@ -40,7 +40,7 @@ SHAREPRO_SCRIPT = SHAREPRO_DIR / "src" / "SharePro" / "sharepro_coloc.py"
 # Processed data per cohort
 PROCESSED = _env_path("LEIO_PROCESSED_DIR", ROOT / "processed_data")
 UKB_FEMALE_CIS_RAW = _env_path("LEIO_UKB_FEMALE_CIS_RAW",
-                                PROCESSED / "UKB_female" / "cis_raw")
+                                PROCESSED / "UKB_female" / "cis_raw_1000kb")
 OUTCOME_DIR = PROCESSED / "outcome"
 
 COHORTS = ["ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female"]
@@ -48,11 +48,25 @@ COHORTS = ["ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female"]
 def cohort_dir(cohort: str) -> Path:
     return PROCESSED / cohort
 
+def raw_cis_sumstats_dir(cohort: str) -> Path:
+    return cohort_dir(cohort) / "raw_cis_sumstats"
+
+def raw_cis_sumstats_hg38_dir(cohort: str) -> Path:
+    return cohort_dir(cohort) / "raw_cis_sumstats_hg38"
+
+def filtered_cis_pqtls_dir(cohort: str) -> Path:
+    return cohort_dir(cohort) / "filtered_cis_pqtls"
+
+def filtered_cis_pqtls_hg38_dir(cohort: str) -> Path:
+    return cohort_dir(cohort) / "filtered_cis_pqtls_hg38"
+
 def cis_sumstats_dir(cohort: str) -> Path:
-    return cohort_dir(cohort) / "cis_sumstats"
+    """Compatibility alias for the filtered MR-ready cis-pQTL product."""
+    return filtered_cis_pqtls_dir(cohort)
 
 def cis_sumstats_hg38_dir(cohort: str) -> Path:
-    return cohort_dir(cohort) / "cis_sumstats_hg38"
+    """Compatibility alias for the lifted filtered MR-ready cis-pQTL product."""
+    return filtered_cis_pqtls_hg38_dir(cohort)
 
 def instruments_dir(cohort: str) -> Path:
     return cohort_dir(cohort) / "instruments"

@@ -133,7 +133,8 @@ def output_exists(
 
     required = list(required_cols or [])
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        opener = _open_text_maybe_gzip if path.name.endswith(".gz") else _open_text
+        with opener(path) as fh:
             header_line = fh.readline()
             if not header_line:
                 return False
@@ -150,8 +151,18 @@ def output_exists(
                     if n_rows >= min_rows:
                         return True
             return False
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
+
+
+def _open_text(path: Path):
+    return path.open("r", encoding="utf-8")
+
+
+def _open_text_maybe_gzip(path: Path):
+    import gzip
+
+    return gzip.open(path, "rt", encoding="utf-8")
 
 
 def _utc_now_iso() -> str:

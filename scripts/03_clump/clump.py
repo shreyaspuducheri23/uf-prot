@@ -20,7 +20,7 @@ from scripts.lib.config import add_config_arg, load_config, get_section
 from scripts.lib.fstat import add_fstat, WEAK_INSTRUMENT_THRESHOLD
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import (
-    COHORTS, cis_sumstats_dir, instruments_dir, cohort_dir
+    COHORTS, filtered_cis_pqtls_dir, instruments_dir, cohort_dir
 )
 from scripts.lib.plink import clump
 from scripts.lib.progress import bar
@@ -38,7 +38,7 @@ def clump_cohort(
     r2: float = 0.001,
     p1: float = 5e-8,
 ) -> int:
-    in_dir = cis_sumstats_dir(cohort)
+    in_dir = filtered_cis_pqtls_dir(cohort)
     out_dir = instruments_dir(cohort)
     out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -15,7 +15,7 @@ from scripts.lib import filters as F
 from scripts.lib.checkpoint import Checkpoint, output_exists
 from scripts.lib.cis import cis_window_bounds
 from scripts.lib.fstat import add_fstat
-from scripts.lib.paths import cis_sumstats_dir, cohort_dir
+from scripts.lib.paths import filtered_cis_pqtls_dir, raw_cis_sumstats_dir, cohort_dir
 from scripts.lib.progress import bar
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.sumstats_io import write_norm
@@ -23,12 +23,13 @@ from scripts.lib.sumstats_io import write_norm
 log = logging.getLogger(__name__)
 _CP_FLUSH_EVERY = 50
 
-# Normalized output columns for cis_sumstats TSVs
+# Normalized output columns for cis summary-statistic TSVs.
 OUTPUT_COLS = [
     "seqid", "gene", "uniprot",
     "chrom", "pos", "rsid", "EA", "OA", "EAF",
     "beta", "se", "pval", "N", "build",
 ]
+RAW_CIS_WINDOW_KB = 1000
 
 
 def run_extraction(
@@ -46,8 +47,10 @@ def run_extraction(
     workers > 1 enables concurrent ThreadPoolExecutor (good for IO-bound downloads).
     Returns count of proteins successfully processed.
     """
-    out_dir = cis_sumstats_dir(cohort)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    filtered_dir = filtered_cis_pqtls_dir(cohort)
+    raw_dir = raw_cis_sumstats_dir(cohort)
+    filtered_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
 
     state_path = cohort_dir(cohort) / "_state_02.json"
     cp = Checkpoint(state_path)
@@ -60,9 +63,9 @@ def run_extraction(
              f"({cp.n_done} already done)")
 
     if workers > 1:
-        n_ok = _run_parallel(cohort, todo, read_fn, out_dir, cp, workers, cfg)
+        n_ok = _run_parallel(cohort, todo, read_fn, filtered_dir, raw_dir, cp, workers, cfg)
     else:
-        n_ok = _run_sequential(cohort, todo, read_fn, out_dir, cp, cfg)
+        n_ok = _run_sequential(cohort, todo, read_fn, filtered_dir, raw_dir, cp, cfg)
 
     # Keep protein_index.tsv in sync for both sequential and parallel paths.
     _write_index(cohort, proteins)
@@ -70,7 +73,7 @@ def run_extraction(
 
 
 def _run_sequential(cohort: str, todo: list[ProteinMeta],
-                    read_fn: Callable, out_dir: Path, cp: Checkpoint,
+                    read_fn: Callable, filtered_dir: Path, raw_dir: Path, cp: Checkpoint,
                     cfg: dict | None = None) -> int:
     n_ok = 0
     n_empty = 0
@@ -78,8 +81,12 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
     n_since_flush = 0
 
     for protein in bar(todo, desc=f"{cohort} extract"):
-        out_path = out_dir / f"{protein.seqid}.tsv"
-        if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
+        filtered_path = filtered_dir / f"{protein.seqid}.tsv"
+        raw_path = raw_dir / f"{protein.seqid}.tsv.gz"
+        if (
+            output_exists(filtered_path, required_cols=OUTPUT_COLS, min_rows=1)
+            and output_exists(raw_path, required_cols=OUTPUT_COLS, min_rows=1)
+        ):
             cp.mark_done(protein.seqid, save=False)
             n_since_flush += 1
             n_ok += 1
@@ -109,7 +116,19 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
                 n_since_flush = 0
             continue
 
-        filtered = _apply_filters(raw, protein, cfg)
+        raw_normalized = _normalize_raw_cis(raw, protein)
+        if raw_normalized.empty:
+            n_empty += 1
+            cp.mark_done(protein.seqid, save=False)
+            n_since_flush += 1
+            if n_since_flush >= _CP_FLUSH_EVERY:
+                cp.flush()
+                n_since_flush = 0
+            continue
+
+        write_norm(raw_normalized, raw_path)
+
+        filtered = _apply_filters(raw_normalized, protein, cfg)
         if filtered.empty:
             log.debug(f"{protein.seqid}: 0 variants after filters")
             n_empty += 1
@@ -120,8 +139,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
                 n_since_flush = 0
             continue
 
-        normalized = _normalize(filtered, protein)
-        write_norm(normalized, out_path)
+        write_norm(filtered, filtered_path)
         cp.mark_done(protein.seqid, save=False)
         n_since_flush += 1
         n_ok += 1
@@ -135,7 +153,7 @@ def _run_sequential(cohort: str, todo: list[ProteinMeta],
 
 
 def _run_parallel(cohort: str, todo: list[ProteinMeta],
-                  read_fn: Callable, out_dir: Path, cp: Checkpoint,
+                  read_fn: Callable, filtered_dir: Path, raw_dir: Path, cp: Checkpoint,
                   workers: int, cfg: dict | None = None) -> int:
     """Concurrent extraction using threads (safe for IO-bound downloads)."""
     lock = threading.Lock()
@@ -146,8 +164,12 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
 
     def process_one(protein: ProteinMeta) -> tuple[str, bool]:
         nonlocal n_ok, n_empty, n_fail, n_since_flush
-        out_path = out_dir / f"{protein.seqid}.tsv"
-        if output_exists(out_path, required_cols=OUTPUT_COLS, min_rows=1):
+        filtered_path = filtered_dir / f"{protein.seqid}.tsv"
+        raw_path = raw_dir / f"{protein.seqid}.tsv.gz"
+        if (
+            output_exists(filtered_path, required_cols=OUTPUT_COLS, min_rows=1)
+            and output_exists(raw_path, required_cols=OUTPUT_COLS, min_rows=1)
+        ):
             with lock:
                 cp.mark_done(protein.seqid, save=False)
                 n_ok += 1
@@ -180,9 +202,8 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
                     n_since_flush = 0
             return protein.seqid, True
 
-        filtered = _apply_filters(raw, protein, cfg)
-        if filtered.empty:
-            log.debug(f"{protein.seqid}: 0 variants after filters")
+        raw_normalized = _normalize_raw_cis(raw, protein)
+        if raw_normalized.empty:
             with lock:
                 n_empty += 1
                 cp.mark_done(protein.seqid, save=False)
@@ -192,9 +213,22 @@ def _run_parallel(cohort: str, todo: list[ProteinMeta],
                     n_since_flush = 0
             return protein.seqid, True
 
-        normalized = _normalize(filtered, protein)
+        filtered = _apply_filters(raw_normalized, protein, cfg)
+        if filtered.empty:
+            log.debug(f"{protein.seqid}: 0 variants after filters")
+            with lock:
+                write_norm(raw_normalized, raw_path)
+                n_empty += 1
+                cp.mark_done(protein.seqid, save=False)
+                n_since_flush += 1
+                if n_since_flush >= _CP_FLUSH_EVERY:
+                    cp.flush()
+                    n_since_flush = 0
+            return protein.seqid, True
+
         with lock:
-            write_norm(normalized, out_path)
+            write_norm(raw_normalized, raw_path)
+            write_norm(filtered, filtered_path)
             cp.mark_done(protein.seqid, save=False)
             n_ok += 1
             n_since_flush += 1
@@ -252,6 +286,32 @@ def _apply_filters(df: pd.DataFrame, protein: ProteinMeta,
                F.drop_ambig_palindromes(df, maf_threshold=pal_maf,
                                         ea_col="EA", oa_col="OA", eaf_col="EAF"), n)
     return df
+
+
+def _normalize_raw_cis(df: pd.DataFrame, protein: ProteinMeta) -> pd.DataFrame:
+    """Normalize and retain the full ±1 Mb native-build TSS window."""
+    raw = F.cis_window(
+        df,
+        protein.tss,
+        protein.chrom,
+        protein.build,
+        kb=RAW_CIS_WINDOW_KB,
+        chrom_col="chrom",
+        pos_col="pos",
+    )
+    if raw.empty:
+        return raw
+    return _normalize(raw, protein)
+
+
+def write_raw_cis_cache(cohort: str, protein: ProteinMeta, raw: pd.DataFrame) -> Path | None:
+    """Write one normalized raw cis cache file and return its path."""
+    normalized = _normalize_raw_cis(raw, protein)
+    if normalized.empty:
+        return None
+    out_path = raw_cis_sumstats_dir(cohort) / f"{protein.seqid}.tsv.gz"
+    write_norm(normalized, out_path)
+    return out_path
 
 
 def _normalize(df: pd.DataFrame, protein: ProteinMeta) -> pd.DataFrame:

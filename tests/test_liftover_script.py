@@ -124,7 +124,7 @@ def test_hg38_cohorts_include_only_native_hg38_sources():
     assert "UKB_PPP" not in _liftover_script.HG38_COHORTS, \
         "UKB_PPP positions are hg19; must be lifted"
     assert "UKB_PPP" not in _liftover_script.CIS_HG38_COHORTS, \
-        "UKB_PPP cis_sumstats positions are hg19; must be lifted"
+        "UKB_PPP cis summary-statistic positions are hg19; must be lifted"
 
 
 def test_aric_instruments_pass_through_without_shift(tmp_path):
@@ -185,3 +185,67 @@ def test_hg19_instruments_do_shift_positions(tmp_path):
         result = pd.read_csv(next(out_dir.glob("*.tsv")), sep="\t")
         assert (result["pos"] != result["pos_hg38"]).any(), \
             f"{cohort}: hg19 positions must be shifted by liftover"
+
+
+def test_hg38_cis_families_pass_through_filtered_and_raw(tmp_path):
+    cohort = "ARIC_EA"
+    state_dir = tmp_path / cohort
+    filtered_in = state_dir / "filtered_cis_pqtls"
+    filtered_out = state_dir / "filtered_cis_pqtls_hg38"
+    raw_in = state_dir / "raw_cis_sumstats"
+    raw_out = state_dir / "raw_cis_sumstats_hg38"
+    filtered_in.mkdir(parents=True)
+    raw_in.mkdir(parents=True)
+    _make_instrument_tsv(filtered_in, seqid="S")
+    raw_df = pd.read_csv(filtered_in / "S.tsv", sep="\t")
+    raw_df.to_csv(raw_in / "S.tsv.gz", sep="\t", index=False)
+
+    with patch.object(_liftover_script, "filtered_cis_pqtls_dir", return_value=filtered_in), \
+         patch.object(_liftover_script, "filtered_cis_pqtls_hg38_dir", return_value=filtered_out), \
+         patch.object(_liftover_script, "raw_cis_sumstats_dir", return_value=raw_in), \
+         patch.object(_liftover_script, "raw_cis_sumstats_hg38_dir", return_value=raw_out), \
+         patch.object(_liftover_script, "cohort_dir", return_value=state_dir), \
+         patch.object(_liftover_script, "lift_table", side_effect=AssertionError("hg38 should pass through")):
+        assert _liftover_script.lift_filtered_cis_pqtls_cohort(cohort) == 1
+        assert _liftover_script.lift_raw_cis_sumstats_cohort(cohort) == 1
+
+    filtered = pd.read_csv(filtered_out / "S.tsv", sep="\t")
+    raw = pd.read_csv(raw_out / "S.tsv.gz", sep="\t")
+    assert filtered["pos"].tolist() == raw_df["pos"].tolist()
+    assert raw["pos"].tolist() == raw_df["pos"].tolist()
+
+
+def test_hg19_cis_families_lift_filtered_and_raw_drop_failures(tmp_path):
+    cohort = "Fenland"
+    state_dir = tmp_path / cohort
+    filtered_in = state_dir / "filtered_cis_pqtls"
+    filtered_out = state_dir / "filtered_cis_pqtls_hg38"
+    raw_in = state_dir / "raw_cis_sumstats"
+    raw_out = state_dir / "raw_cis_sumstats_hg38"
+    filtered_in.mkdir(parents=True)
+    raw_in.mkdir(parents=True)
+    _make_instrument_tsv(filtered_in, seqid="S")
+    raw_df = pd.read_csv(filtered_in / "S.tsv", sep="\t")
+    raw_df.to_csv(raw_in / "S.tsv.gz", sep="\t", index=False)
+
+    def fake_lift_table(df, chrom_col, pos_col, **kwargs):
+        lifted = df[df[pos_col] != 25_300_000].copy()
+        lifted["chrom_hg38"] = lifted[chrom_col]
+        lifted["pos_hg38"] = lifted[pos_col] + 1000
+        return lifted
+
+    with patch.object(_liftover_script, "filtered_cis_pqtls_dir", return_value=filtered_in), \
+         patch.object(_liftover_script, "filtered_cis_pqtls_hg38_dir", return_value=filtered_out), \
+         patch.object(_liftover_script, "raw_cis_sumstats_dir", return_value=raw_in), \
+         patch.object(_liftover_script, "raw_cis_sumstats_hg38_dir", return_value=raw_out), \
+         patch.object(_liftover_script, "cohort_dir", return_value=state_dir), \
+         patch.object(_liftover_script, "lift_table", side_effect=fake_lift_table):
+        assert _liftover_script.lift_filtered_cis_pqtls_cohort(cohort) == 1
+        assert _liftover_script.lift_raw_cis_sumstats_cohort(cohort) == 1
+
+    filtered = pd.read_csv(filtered_out / "S.tsv", sep="\t")
+    raw = pd.read_csv(raw_out / "S.tsv.gz", sep="\t")
+    assert len(filtered) == 1
+    assert len(raw) == 1
+    assert filtered["pos"].iloc[0] == 25_213_564
+    assert raw["pos"].iloc[0] == 25_213_564

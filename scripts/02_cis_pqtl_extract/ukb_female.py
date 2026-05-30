@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 02_cis_pqtl_extract/ukb_female.py
-Phase 2: Extract cis-pQTLs from ProteoNexus UKB-female pre-filtered TSVs.
+Phase 2: Extract cis-pQTLs from ProteoNexus UKB-female raw cis TSVs.
 
-Reads from processed_data/UKB_female/cis_raw/{GENE}.tsv (written by
+Reads from processed_data/UKB_female/cis_raw_1000kb/{GENE}.tsv (written by
 protonexus_unpack.py) via plain pd.read_csv() — no tar, no gzip.
-Applies the standard filter pipeline (p < 5e-8, MAF, MHC, palindromes)
-and writes to processed_data/UKB_female/cis_sumstats/{GENE}.tsv.
+Writes processed_data/UKB_female/raw_cis_sumstats/{GENE}.tsv.gz and applies
+the standard filter pipeline (p < 5e-8, MAF, MHC, palindromes) to write
+processed_data/UKB_female/filtered_cis_pqtls/{GENE}.tsv.
 
 Usage:
   python scripts/02_cis_pqtl_extract/ukb_female.py [--workers N] [--limit N]
@@ -50,7 +51,8 @@ def _load_tss_cache(cache_path: Path) -> dict[str, tuple[str, int]]:
 
 def build_protein_list(build: str = BUILD) -> list[ProteinMeta]:
     """
-    Scan cis_raw/ for existing TSVs written by protonexus_unpack.py.
+    Scan the window-scoped cis_raw directory for existing TSVs written by
+    protonexus_unpack.py.
     Returns a ProteinMeta for each TSV found.
     """
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
@@ -78,7 +80,7 @@ def build_protein_list(build: str = BUILD) -> list[ProteinMeta]:
         ))
 
     log.info(
-        f"UKB_female: {len(proteins)} proteins from cis_raw "
+        f"UKB_female: {len(proteins)} proteins from {UKB_FEMALE_CIS_RAW.name} "
         f"({len(missing_tss)} skipped — no TSS)"
     )
     return proteins
@@ -139,8 +141,8 @@ def normalize_protonexus_rows(rows: list[dict]) -> pd.DataFrame | None:
 
 def build_read_fn() -> Callable[[ProteinMeta], pd.DataFrame | None]:
     """
-    Return a read function that reads the pre-filtered cis TSV and
-    normalizes it.  No tar, no gzip — plain pd.read_csv().
+    Return a read function that reads the raw cis TSV and normalizes it.
+    No tar, no gzip — plain pd.read_csv().
     """
     def read_fn(protein: ProteinMeta) -> pd.DataFrame | None:
         path = UKB_FEMALE_CIS_RAW / f"{protein.seqid}.tsv"

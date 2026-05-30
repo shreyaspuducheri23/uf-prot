@@ -58,7 +58,7 @@ class TestReportCohort:
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(8)],
                          failed={"SeqId_8": "timeout", "SeqId_9": "timeout"})
-        _make_tsv_files(cdir / "cis_sumstats", 6)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 6)
 
         rows, warns = report_cohort("deCODE", processed_dir=tmp_path)
         assert len(rows) == 1
@@ -75,7 +75,7 @@ class TestReportCohort:
         _make_index(cdir, 100)
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(80)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 70)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 70)
         _make_checkpoint(cdir, "_state_03.json",
                          done=[f"SeqId_{i}" for i in range(60)], failed={})
         _make_tsv_files(cdir / "instruments", 55)
@@ -92,7 +92,7 @@ class TestReportCohort:
         # 10 not done (n_input - n_done = 100 - 90 = 10, 10% > 5%)
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(90)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 80)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 80)
 
         _, warns = report_cohort("deCODE", processed_dir=tmp_path)
         assert any("not done" in w for w in warns)
@@ -105,7 +105,7 @@ class TestReportCohort:
         # Only 50 marked done, none marked failed — 50 were silently abandoned
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(50)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 50)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 50)
 
         rows, warns = report_cohort("deCODE", processed_dir=tmp_path)
         assert rows[0]["n_failed"] == 50  # n_input(100) - n_done(50)
@@ -118,7 +118,7 @@ class TestReportCohort:
         # 98 done → n_failed = 2 (2% < 5%)
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(98)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 96)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 96)
 
         _, warns = report_cohort("deCODE", processed_dir=tmp_path)
         assert warns == []
@@ -129,7 +129,7 @@ class TestReportCohort:
         _make_index(cdir, 10)
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(9)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 8)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 8)
 
         run_report(["deCODE"], processed_dir=tmp_path)
 
@@ -138,7 +138,7 @@ class TestReportCohort:
         df = pd.read_csv(tsv_path, sep="\t")
         assert len(df) == 1
         assert df.loc[0, "cohort"] == "deCODE"
-        assert df.loc[0, "stage"] == "cis_sumstats"
+        assert df.loc[0, "stage"] == "filtered_cis_pqtls"
         assert df.loc[0, "n_input"] == 10
         assert df.loc[0, "n_output"] == 8
 
@@ -154,7 +154,7 @@ class TestStrictMode:
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(80)],
                          failed={f"SeqId_{i}": "err" for i in range(80, 100)})
-        _make_tsv_files(cdir / "cis_sumstats", 70)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 70)
 
         monkeypatch.setattr("scripts.qc.yield_report.PROCESSED", tmp_path)
 
@@ -170,7 +170,7 @@ class TestStrictMode:
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(99)],
                          failed={f"SeqId_99": "err"})
-        _make_tsv_files(cdir / "cis_sumstats", 98)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 98)
 
         any_warn = run_report(["deCODE"], strict=True, processed_dir=tmp_path)
         assert not any_warn
@@ -181,7 +181,7 @@ class TestStrictMode:
         _make_index(cdir, 100)
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(50)], failed={})
-        _make_tsv_files(cdir / "cis_sumstats", 45)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 45)
 
         any_warn = run_report(["deCODE"], processed_dir=tmp_path)
         assert any_warn
@@ -193,7 +193,7 @@ class TestStrictMode:
         _make_checkpoint(cdir, "_state_02.json",
                          done=[f"SeqId_{i}" for i in range(98)],
                          failed={f"SeqId_{i}": "err" for i in range(98, 100)})
-        _make_tsv_files(cdir / "cis_sumstats", 96)
+        _make_tsv_files(cdir / "filtered_cis_pqtls", 96)
 
         any_warn = run_report(["deCODE"], processed_dir=tmp_path)
         assert not any_warn

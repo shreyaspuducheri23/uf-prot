@@ -24,7 +24,7 @@ from scripts.lib.paths import cohort_dir
 from scripts.lib.progress import bar
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.synapse_stream import list_folder, stream_fenland_protein
-from scripts.lib.cis_extract import run_extraction
+from scripts.lib.cis_extract import RAW_CIS_WINDOW_KB, run_extraction
 
 log = setup_logger("02_fenland")
 
@@ -161,7 +161,7 @@ def main() -> None:
     cis_cfg = get_section(cfg, "cis_extract")
     build = get_cohort_build(cfg, COHORT)
     n_default = get_cohort_sample_size(cfg, COHORT)
-    window_kb = cis_cfg["window_kb"]
+    window_kb = RAW_CIS_WINDOW_KB
 
     with RunManifest("02_cis_pqtl_extract/fenland.py") as manifest:
         protein_files = load_fenland_manifest()

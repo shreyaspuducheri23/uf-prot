@@ -19,6 +19,11 @@ def _write_candidates(base: Path, seqid: str, build: str = "hg19") -> None:
     )
 
 
+def _write_raw_cis_hg38(raw_dir: Path, seqid: str, df: pd.DataFrame) -> None:
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(raw_dir / f"{seqid}.tsv.gz", sep="\t", index=False)
+
+
 class FakeOutcome:
     def __init__(self, out_df: pd.DataFrame):
         self.out_df = out_df
@@ -73,6 +78,8 @@ def test_hg19_region_lifted_before_outcome_query(tmp_path):
         }
     )
     fake_outcome = FakeOutcome(out_df)
+    raw_dir = tmp_path / "raw_cis_sumstats_hg38"
+    _write_raw_cis_hg38(raw_dir, seqid, exp_df)
 
     def fake_lift_position(chrom: str, pos: int):
         if pos == 1_100_000:
@@ -81,7 +88,7 @@ def test_hg19_region_lifted_before_outcome_query(tmp_path):
 
     with patch.object(_mod, "cohort_dir", return_value=cohort_base), \
          patch.object(_mod, "COLOC_REGIONS_DIR", tmp_path / "regions"), \
-         patch.object(_mod, "extract_aric_region", return_value=exp_df), \
+         patch.object(_mod, "raw_cis_sumstats_hg38_dir", return_value=raw_dir), \
          patch.object(_mod, "OutcomeLookup", return_value=fake_outcome), \
          patch.object(_mod, "lift_position", side_effect=fake_lift_position):
         n_ok = _mod.extract_cohort_regions(cohort)
@@ -115,10 +122,12 @@ def test_empty_outcome_region_marked_failed_not_done(tmp_path):
         }
     )
     fake_outcome = FakeOutcome(pd.DataFrame())
+    raw_dir = tmp_path / "raw_cis_sumstats_hg38"
+    _write_raw_cis_hg38(raw_dir, seqid, exp_df)
 
     with patch.object(_mod, "cohort_dir", return_value=cohort_base), \
          patch.object(_mod, "COLOC_REGIONS_DIR", tmp_path / "regions"), \
-         patch.object(_mod, "extract_aric_region", return_value=exp_df), \
+         patch.object(_mod, "raw_cis_sumstats_hg38_dir", return_value=raw_dir), \
          patch.object(_mod, "OutcomeLookup", return_value=fake_outcome):
         n_ok = _mod.extract_cohort_regions(cohort)
 
@@ -126,3 +135,81 @@ def test_empty_outcome_region_marked_failed_not_done(tmp_path):
     state = json.loads((cohort_base / "_state_08_regions.json").read_text())
     assert state["done"] == []
     assert state["status"][seqid]["state"] == "failed"
+
+
+def test_reads_raw_hg38_cache_and_retains_variant_absent_from_filtered_file(tmp_path):
+    cohort = "Fenland"
+    seqid = "SeqId_raw"
+    cohort_base = tmp_path / cohort
+    _write_candidates(cohort_base, seqid, build="hg38")
+
+    raw_df = pd.DataFrame({
+        "chrom": ["1", "1"],
+        "pos": [100_000, 150_000],
+        "rsid": ["rs_filtered", "rs_raw_only"],
+        "EA": ["A", "C"],
+        "OA": ["G", "T"],
+        "EAF": [0.2, 0.3],
+        "beta": [0.1, 0.05],
+        "se": [0.01, 0.02],
+        "pval": [1e-9, 0.4],
+        "N": [1000, 1000],
+        "seqid": [seqid, seqid],
+        "gene": ["G1", "G1"],
+        "uniprot": ["P1", "P1"],
+        "build": ["hg38", "hg38"],
+    })
+    raw_dir = tmp_path / "raw_cis_sumstats_hg38"
+    _write_raw_cis_hg38(raw_dir, seqid, raw_df)
+    out_df = pd.DataFrame({"chromosome": ["1"], "base_pair_location": [100_000]})
+    fake_outcome = FakeOutcome(out_df)
+
+    with patch.object(_mod, "cohort_dir", return_value=cohort_base), \
+         patch.object(_mod, "COLOC_REGIONS_DIR", tmp_path / "regions"), \
+         patch.object(_mod, "raw_cis_sumstats_hg38_dir", return_value=raw_dir), \
+         patch.object(_mod, "_recover_raw_cis_hg38", side_effect=AssertionError("should not recover")), \
+         patch.object(_mod, "OutcomeLookup", return_value=fake_outcome):
+        n_ok = _mod.extract_cohort_regions(cohort)
+
+    assert n_ok == 1
+    written = pd.read_csv(tmp_path / "regions" / cohort / seqid / "exposure.tsv", sep="\t")
+    assert set(written["rsid"]) == {"rs_filtered", "rs_raw_only"}
+
+
+def test_missing_raw_cache_uses_one_protein_recovery(tmp_path):
+    cohort = "UKB_PPP"
+    seqid = "SeqId_recover"
+    cohort_base = tmp_path / cohort
+    _write_candidates(cohort_base, seqid, build="hg19")
+
+    recovered_df = pd.DataFrame({
+        "chrom": ["1"],
+        "pos": [100_000],
+        "rsid": ["rs_recovered"],
+        "EA": ["A"],
+        "OA": ["G"],
+        "EAF": [0.2],
+        "beta": [0.1],
+        "se": [0.01],
+        "pval": [0.2],
+        "N": [1000],
+        "seqid": [seqid],
+        "gene": ["G1"],
+        "uniprot": ["P1"],
+        "build": ["hg38"],
+    })
+    out_df = pd.DataFrame({"chromosome": ["1"], "base_pair_location": [100_000]})
+    fake_outcome = FakeOutcome(out_df)
+
+    with patch.object(_mod, "cohort_dir", return_value=cohort_base), \
+         patch.object(_mod, "COLOC_REGIONS_DIR", tmp_path / "regions"), \
+         patch.object(_mod, "raw_cis_sumstats_hg38_dir", return_value=tmp_path / "missing_raw"), \
+         patch.object(_mod, "_recover_raw_cis_hg38", return_value=recovered_df) as recover, \
+         patch.object(_mod, "OutcomeLookup", return_value=fake_outcome), \
+         patch.object(_mod, "lift_position", side_effect=lambda chrom, pos: (chrom, pos)):
+        n_ok = _mod.extract_cohort_regions(cohort)
+
+    assert n_ok == 1
+    recover.assert_called_once()
+    written = pd.read_csv(tmp_path / "regions" / cohort / seqid / "exposure.tsv", sep="\t")
+    assert set(written["rsid"]) == {"rs_recovered"}

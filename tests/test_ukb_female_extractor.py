@@ -6,7 +6,7 @@ Tests:
   2. normalize_protonexus_rows — N is per-SNP from n_obs (not a fixed constant)
   3. build_read_fn — returns None for a gene not in cis_raw
   4. build_read_fn — reads a plain TSV and returns normalized DataFrame
-  5. protonexus_unpack — filters rows to ±500 kb cis window from a mock tar
+  5. protonexus_unpack — filters rows to the requested cis window from a mock tar
   6. Integration — real SSD data (skipped if /Volumes/Extreme SSD not mounted)
 """
 import gzip
@@ -192,7 +192,7 @@ class TestReadFn:
 
 class TestProtonexusUnpack:
     def test_filters_to_cis_window(self, tmp_path):
-        """Only rows within ±500 kb of TSS should be written to cis_raw."""
+        """Only rows within the requested TSS window should be written to cis_raw."""
         gene = "GMPR2"
         tss = 2_000_000
         window_kb = 500
@@ -244,6 +244,43 @@ class TestProtonexusUnpack:
         assert len(result) == 1, f"Expected 1 row (in-window only), got {len(result)}"
         assert result["rs"].iloc[0] == "rs1"
 
+    def test_window_scoped_checkpoint_ignores_old_unpack_state(self, tmp_path):
+        """Old ±500 kb unpack checkpoints must not skip the new ±1 Mb cache."""
+        gene = "GMPR2"
+        tss = 2_000_000
+        window_kb = 1000
+        rows = [
+            {"chr": "1", "rs": "rs_new_window", "ps": tss + 750_000,
+             "n_mis": 0, "n_obs": 17988, "allele1": "A", "allele0": "G",
+             "af": 0.3, "beta": 0.05, "se": 0.01, "p_wald": 1e-10,
+             "pip_susie": 0.9, "fwer": 0.001},
+        ]
+        _make_tar_with_gene(tmp_path, gene, rows)
+
+        cis_raw_dir = tmp_path / "cis_raw_1000kb"
+        cis_raw_dir.mkdir()
+        cohort_base = tmp_path / "cohort"
+        cohort_base.mkdir()
+        pd.DataFrame([{"gene": gene, "chrom": "1", "tss": tss}]).to_csv(
+            cohort_base / "_tss_hg19.tsv", sep="\t", index=False
+        )
+        # Simulate the pre-migration unpack state. It should not suppress a 1000 kb run.
+        (cohort_base / "_state_02_unpack.json").write_text(
+            '{"done": ["GMPR2"], "status": {"GMPR2": {"state": "success"}}}'
+        )
+
+        with (
+            mock.patch.object(_unpack_mod, "UKB_FEMALE_DIR", tmp_path),
+            mock.patch.object(_unpack_mod, "UKB_FEMALE_CIS_RAW", cis_raw_dir),
+            mock.patch.object(_unpack_mod, "cohort_dir", return_value=cohort_base),
+        ):
+            n = run_unpack(limit=None, window_kb=window_kb)
+
+        assert n == 1
+        result = pd.read_csv(cis_raw_dir / f"{gene}.tsv", sep="\t")
+        assert result["rs"].tolist() == ["rs_new_window"]
+        assert (cohort_base / "_state_02_unpack_1000kb.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # Test 6: Integration — real SSD data (skipped if not mounted)
@@ -289,9 +326,11 @@ def test_integration_real_data():
         f"ukb_female.py failed:\n{result_extract.stderr}"
     )
 
-    from scripts.lib.paths import cis_sumstats_dir
-    out_files = list(cis_sumstats_dir("UKB_female").glob("*.tsv"))
-    assert len(out_files) >= 1, "Expected at least 1 cis_sumstats TSV after extraction"
+    from scripts.lib.paths import filtered_cis_pqtls_dir, raw_cis_sumstats_dir
+    out_files = list(filtered_cis_pqtls_dir("UKB_female").glob("*.tsv"))
+    raw_files = list(raw_cis_sumstats_dir("UKB_female").glob("*.tsv.gz"))
+    assert len(out_files) >= 1, "Expected at least 1 filtered_cis_pqtls TSV after extraction"
+    assert len(raw_files) >= 1, "Expected at least 1 raw_cis_sumstats TSV.GZ after extraction"
 
     out_df = pd.read_csv(out_files[0], sep="\t")
     for col in ("seqid", "gene", "chrom", "pos", "rsid", "EA", "OA",

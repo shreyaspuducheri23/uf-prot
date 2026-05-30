@@ -157,8 +157,10 @@ def _run_blackbox(tmp_path: Path, clump_p1: float) -> int:
     res_clump = subprocess.run(cmd_clump, capture_output=True, text=True, env=env)
     assert res_clump.returncode == 0, res_clump.stderr + "\n" + res_clump.stdout
 
-    cis_path = processed_dir / "ARIC_EA" / "cis_sumstats" / "SeqId_TEST.tsv"
+    cis_path = processed_dir / "ARIC_EA" / "filtered_cis_pqtls" / "SeqId_TEST.tsv"
     assert cis_path.exists()
+    raw_path = processed_dir / "ARIC_EA" / "raw_cis_sumstats" / "SeqId_TEST.tsv.gz"
+    assert raw_path.exists()
     cis_df = pd.read_csv(cis_path, sep="\t")
     assert set(cis_df["rsid"]) == {"rs1", "rs2"}
 

@@ -16,10 +16,10 @@ from scripts.lib.paths import COHORTS, PROCESSED
 
 # (stage_name, output_subfolder, checkpoint_filename)
 STAGE_DEFS: list[tuple[str, str, str]] = [
-    ("cis_sumstats",     "cis_sumstats",     "_state_02.json"),
-    ("instruments",      "instruments",      "_state_03.json"),
-    ("instruments_hg38", "instruments_hg38", "_state_04.json"),
-    ("harmonised",       "harmonised",       "_state_05.json"),
+    ("filtered_cis_pqtls", "filtered_cis_pqtls", "_state_02.json"),
+    ("instruments",        "instruments",        "_state_03.json"),
+    ("instruments_hg38",   "instruments_hg38",   "_state_04.json"),
+    ("harmonised",         "harmonised",         "_state_05.json"),
 ]
 
 WARN_FAIL_FRAC = 0.05
