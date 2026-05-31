@@ -92,11 +92,57 @@ def test_coloc_abf_reverse_matches_flip_outcome_effects(tmp_path):
     assert aligned_out["effect_allele_frequency"].tolist() == pytest.approx([0.2] * 6)
 
 
-def test_coloc_abf_excludes_incompatible_same_rsid_variants(tmp_path):
+def test_coloc_abf_complement_forward_matches_preserve_outcome_effects(tmp_path):
+    aligned_exp, aligned_out = _run_align(
+        tmp_path,
+        _exp(alleles=[("A", "G")] * 6),
+        _out(alleles=[("T", "C")] * 6),
+    )
+
+    assert len(aligned_exp) == 6
+    assert aligned_exp["snp_key"].tolist() == aligned_out["snp_key"].tolist()
+    assert aligned_out["beta"].tolist() == pytest.approx([0.7] * 6)
+    assert aligned_out["effect_allele_frequency"].tolist() == pytest.approx([0.8] * 6)
+
+
+def test_coloc_abf_complement_reverse_matches_flip_outcome_effects(tmp_path):
     aligned_exp, aligned_out = _run_align(
         tmp_path,
         _exp(alleles=[("A", "G")] * 6),
         _out(alleles=[("C", "T")] * 6),
+    )
+
+    assert len(aligned_exp) == 6
+    assert aligned_exp["snp_key"].tolist() == aligned_out["snp_key"].tolist()
+    assert aligned_out["beta"].tolist() == pytest.approx([-0.7] * 6)
+    assert aligned_out["effect_allele_frequency"].tolist() == pytest.approx([0.2] * 6)
+
+
+def test_coloc_abf_palindromic_matches_keep_existing_forward_and_reverse_behavior(tmp_path):
+    aligned_exp_fwd, aligned_out_fwd = _run_align(
+        tmp_path,
+        _exp(alleles=[("A", "T")] * 6),
+        _out(alleles=[("A", "T")] * 6),
+    )
+    aligned_exp_rev, aligned_out_rev = _run_align(
+        tmp_path,
+        _exp(alleles=[("C", "G")] * 6),
+        _out(alleles=[("G", "C")] * 6),
+    )
+
+    assert len(aligned_exp_fwd) == 6
+    assert aligned_out_fwd["beta"].tolist() == pytest.approx([0.7] * 6)
+    assert aligned_out_fwd["effect_allele_frequency"].tolist() == pytest.approx([0.8] * 6)
+    assert len(aligned_exp_rev) == 6
+    assert aligned_out_rev["beta"].tolist() == pytest.approx([-0.7] * 6)
+    assert aligned_out_rev["effect_allele_frequency"].tolist() == pytest.approx([0.2] * 6)
+
+
+def test_coloc_abf_excludes_incompatible_same_rsid_variants(tmp_path):
+    aligned_exp, aligned_out = _run_align(
+        tmp_path,
+        _exp(alleles=[("A", "G")] * 6),
+        _out(alleles=[("C", "G")] * 6),
     )
 
     assert aligned_exp.empty
