@@ -14,16 +14,20 @@ run_protein_mr <- function(harm_dt) {
   methods <- if (n_snps == 1) {
     c("mr_wald_ratio")
   } else if (n_snps == 2) {
-    c("mr_ivw")
+    c("mr_ivw_mre")
   } else {
-    c("mr_ivw", "mr_weighted_median", "mr_weighted_mode", "mr_egger_regression")
+    c("mr_ivw_mre", "mr_weighted_median", "mr_weighted_mode", "mr_egger_regression")
   }
 
   res <- suppressMessages(mr(harm_dt, method_list = methods))
   if (nrow(res) == 0) return(NULL)
 
   # Primary estimate
-  primary_method <- if (n_snps == 1) "Wald ratio" else "Inverse variance weighted"
+  primary_method <- if (n_snps == 1) {
+    "Wald ratio"
+  } else {
+    "Inverse variance weighted (multiplicative random effects)"
+  }
   primary <- res[res$method == primary_method, ]
   if (nrow(primary) == 0) primary <- res[1, ]
 
@@ -67,7 +71,7 @@ run_sensitivity <- function(harm_dt) {
                                    out$egger_intercept_pval < 0.05
 
     # Alternative methods
-    res_all <- suppressMessages(mr(harm_dt, method_list = c("mr_ivw", "mr_weighted_median",
+    res_all <- suppressMessages(mr(harm_dt, method_list = c("mr_ivw_mre", "mr_weighted_median",
                                                              "mr_weighted_mode", "mr_egger_regression")))
     # Direction consistency across all methods
     signs <- sign(res_all$b)
