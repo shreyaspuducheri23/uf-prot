@@ -125,7 +125,7 @@ run_cohort_coloc <- function(cohort) {
       cp <- checkpoint_mark(cp, seqid)
     }, error = function(e) {
       log_warn("%s %s: coloc.abf failed — %s", cohort, seqid, conditionMessage(e))
-      cp <<- checkpoint_mark(cp, seqid)
+      cp <<- checkpoint_mark_failed(cp, seqid, conditionMessage(e))
     })
   }
 

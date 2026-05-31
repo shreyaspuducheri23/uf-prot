@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.qc.yield_report import report_cohort, run_report, main
+from scripts.qc.yield_report import CheckpointStats, report_cohort, run_report, main
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -33,6 +33,33 @@ def _make_tsv_files(out_dir: Path, n: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for i in range(n):
         (out_dir / f"SeqId_{i}.tsv").write_text("seqid\tgene\n")
+
+
+def _write_variant_tsv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False)
+
+
+def _variant_rows(seqid: str, positions: list[int]) -> list[dict]:
+    return [
+        {
+            "seqid": seqid,
+            "gene": "GENE",
+            "uniprot": "U",
+            "chrom": "1",
+            "pos": pos,
+            "rsid": f"rs{pos}",
+            "EA": "A",
+            "OA": "G",
+            "EAF": 0.25,
+            "beta": 0.1,
+            "se": 0.01,
+            "pval": 1e-9,
+            "N": 1000,
+            "build": "hg19",
+        }
+        for pos in positions
+    ]
 
 
 # ── report_cohort ─────────────────────────────────────────────────────────────
@@ -197,3 +224,150 @@ class TestStrictMode:
 
         any_warn = run_report(["deCODE"], processed_dir=tmp_path)
         assert not any_warn
+
+
+# ── stage-aware row/locus accounting ─────────────────────────────────────────
+
+class TestComprehensiveStages:
+    def test_liftover_locus_loss_visible_when_protein_survives(self, tmp_path):
+        cdir = tmp_path / "UKB_female"
+        cdir.mkdir()
+        _make_index(cdir, 1)
+        _write_variant_tsv(cdir / "instruments" / "SeqId_0.tsv", _variant_rows("SeqId_0", [100, 200, 300]))
+        lifted = _variant_rows("SeqId_0", [100, 200])
+        for row in lifted:
+            row["chrom_hg38"] = row["chrom"]
+            row["pos_hg38"] = row["pos"] + 1000
+        _write_variant_tsv(cdir / "instruments_hg38" / "SeqId_0.tsv", lifted)
+        _make_checkpoint(cdir, "_state_04.json", done=["SeqId_0"], failed={})
+
+        rows, warns = report_cohort("UKB_female", processed_dir=tmp_path)
+        liftover = next(r for r in rows if r["stage"] == "instruments_hg38")
+        assert liftover["units_input"] == 1
+        assert liftover["units_output"] == 1
+        assert liftover["pct_unit_yield"] == 100.0
+        assert liftover["rows_input"] == 3
+        assert liftover["rows_output"] == 2
+        assert liftover["loci_input"] == 3
+        assert liftover["loci_output"] == 2
+        assert any("dropped" in w and "liftover" in w for w in warns)
+
+    def test_row_and_unique_locus_yield_can_differ(self, tmp_path):
+        cdir = tmp_path / "UKB_female"
+        cdir.mkdir()
+        _make_index(cdir, 1)
+        rows = _variant_rows("SeqId_0", [100, 100])
+        rows[0]["rsid"] = "rsA"
+        rows[1]["rsid"] = "rsB"
+        _write_variant_tsv(cdir / "instruments" / "SeqId_0.tsv", rows)
+        lifted = [dict(rows[0], chrom_hg38="1", pos_hg38=1100)]
+        _write_variant_tsv(cdir / "instruments_hg38" / "SeqId_0.tsv", lifted)
+        _make_checkpoint(cdir, "_state_04.json", done=["SeqId_0"], failed={})
+
+        rows, _ = report_cohort("UKB_female", processed_dir=tmp_path)
+        liftover = next(r for r in rows if r["stage"] == "instruments_hg38")
+        assert liftover["rows_input"] == 2
+        assert liftover["rows_output"] == 1
+        assert liftover["loci_input"] == 1
+        assert liftover["loci_output"] == 1
+        assert liftover["pct_row_yield"] == 50.0
+        assert liftover["pct_locus_yield"] == 100.0
+
+    def test_dropped_locus_detail_tsv_contains_missing_variant(self, tmp_path):
+        cdir = tmp_path / "UKB_female"
+        cdir.mkdir()
+        _make_index(cdir, 1)
+        _write_variant_tsv(cdir / "instruments" / "SeqId_0.tsv", _variant_rows("SeqId_0", [100, 200]))
+        lifted = _variant_rows("SeqId_0", [100])
+        lifted[0]["chrom_hg38"] = "1"
+        lifted[0]["pos_hg38"] = 1100
+        _write_variant_tsv(cdir / "instruments_hg38" / "SeqId_0.tsv", lifted)
+        _make_checkpoint(cdir, "_state_04.json", done=["SeqId_0"], failed={})
+
+        run_report(["UKB_female"], processed_dir=tmp_path)
+        dropped = pd.read_csv(tmp_path / "_yield_report_dropped_loci.tsv", sep="\t")
+        assert "rs200" in set(dropped["variant_id"])
+        assert "1:200" in set(dropped["locus"])
+
+    def test_mr_checkpoint_done_without_result_is_flagged(self, tmp_path, monkeypatch):
+        cdir = tmp_path / "ARIC_EA"
+        cdir.mkdir()
+        _make_index(cdir, 2)
+        for seqid in ("SeqId_0", "SeqId_1"):
+            rows = _variant_rows(seqid, [100])
+            rows[0]["mr_keep"] = True
+            _write_variant_tsv(cdir / "harmonised" / f"{seqid}.tsv", rows)
+        pd.DataFrame([{"cohort": "ARIC_EA", "seqid": "SeqId_0", "n_snps": 1}]).to_csv(
+            cdir / "mr_results.tsv", sep="\t", index=False
+        )
+
+        monkeypatch.setattr(
+            "scripts.qc.yield_report._read_r_checkpoint",
+            lambda path: CheckpointStats(done={"SeqId_0", "SeqId_1"}),
+        )
+        rows, warns = report_cohort("ARIC_EA", processed_dir=tmp_path)
+        mr = next(r for r in rows if r["stage"] == "mr")
+        assert mr["units_done_without_output"] == 1
+        assert any("checkpoint-done" in w for w in warns)
+
+    def test_sensitivity_single_snp_proteins_are_not_applicable(self, tmp_path):
+        cdir = tmp_path / "deCODE"
+        cdir.mkdir()
+        _make_index(cdir, 2)
+        pd.DataFrame([
+            {"cohort": "deCODE", "seqid": "SeqId_0", "n_snps": 1},
+            {"cohort": "deCODE", "seqid": "SeqId_1", "n_snps": 2},
+        ]).to_csv(cdir / "mr_results.tsv", sep="\t", index=False)
+        pd.DataFrame([{"seqid": "SeqId_1", "passes_sensitivity": True}]).to_csv(
+            cdir / "sensitivity.tsv", sep="\t", index=False
+        )
+
+        rows, warns = report_cohort("deCODE", processed_dir=tmp_path)
+        sensitivity = next(r for r in rows if r["stage"] == "sensitivity")
+        assert sensitivity["units_input"] == 1
+        assert sensitivity["units_output"] == 1
+        assert sensitivity["units_not_applicable"] == 1
+        assert warns == []
+
+    def test_coloc_sharepro_checkpoint_failure_reported(self, tmp_path):
+        cdir = tmp_path / "Fenland"
+        cdir.mkdir()
+        _make_index(cdir, 1)
+        pd.DataFrame([{
+            "cohort": "Fenland",
+            "seqid": "SeqId_0",
+            "n_snps": 2,
+            "fdr_pass": True,
+        }]).to_csv(cdir / "mr_results.tsv", sep="\t", index=False)
+        pd.DataFrame([{"seqid": "SeqId_0", "passes_sensitivity": True}]).to_csv(
+            cdir / "sensitivity.tsv", sep="\t", index=False
+        )
+        region = tmp_path / "coloc" / "regions" / "Fenland" / "SeqId_0"
+        _write_variant_tsv(region / "exposure.tsv", _variant_rows("SeqId_0", [100]))
+        pd.DataFrame([{
+            "chromosome": "1",
+            "base_pair_location": 100,
+            "rsid": "rs100",
+            "effect_allele": "A",
+            "other_allele": "G",
+        }]).to_csv(region / "outcome.tsv", sep="\t", index=False)
+        _make_checkpoint(cdir, "_state_08_sharepro.json", done=[], failed={"SeqId_0": "insufficient_common_snps"})
+
+        rows, _ = report_cohort("Fenland", processed_dir=tmp_path)
+        sharepro = next(r for r in rows if r["stage"] == "sharepro")
+        assert sharepro["units_input"] == 1
+        assert sharepro["units_output"] == 0
+        assert sharepro["units_failed_cp"] == 1
+
+    def test_legacy_cis_sumstats_fallback(self, tmp_path):
+        cdir = tmp_path / "deCODE"
+        cdir.mkdir()
+        _make_index(cdir, 2)
+        _make_checkpoint(cdir, "_state_02.json", done=["SeqId_0"], failed={})
+        _write_variant_tsv(cdir / "cis_sumstats" / "SeqId_0.tsv", _variant_rows("SeqId_0", [100]))
+
+        rows, _ = report_cohort("deCODE", processed_dir=tmp_path)
+        filtered = next(r for r in rows if r["stage"] == "filtered_cis_pqtls")
+        assert filtered["units_input"] == 2
+        assert filtered["units_output"] == 1
+        assert filtered["rows_output"] == 1

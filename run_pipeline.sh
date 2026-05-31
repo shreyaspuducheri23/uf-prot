@@ -127,24 +127,31 @@ uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "6"  "two-sample MR + BH-FDR" \
   Rscript scripts/06_mr/run_mr.R
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "7"  "sensitivity analyses" \
   Rscript scripts/07_sensitivity/run_sensitivity.R
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "8a" "coloc: extract ±1 Mb regions (all cohorts)" \
   uv run python scripts/08_coloc/extract_regions.py --cohort all
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "8b" "coloc: SharePro (all cohorts)" \
   uv run python scripts/08_coloc/sharepro.py --cohort all
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "8c" "coloc: coloc.abf sensitivity (R)" \
   Rscript scripts/08_coloc/coloc_abf.R
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "9"  "assemble final results table" \
   uv run python scripts/09_assemble/assemble.py
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 run_step "9b" "cross-cohort gene-level summary" \
   uv run python scripts/09_assemble/cross_cohort.py
+uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 log "========================================================"
 log "Pipeline complete. Results: processed_data/final_results.tsv"
