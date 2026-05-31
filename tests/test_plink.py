@@ -199,11 +199,11 @@ def test_clump_drops_variants_not_in_bim(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# r_square_matrix regression tests
+# pearson_r_matrix regression tests
 # ---------------------------------------------------------------------------
 
-def test_r_square_matrix_uses_r_unphased(monkeypatch):
-    """r_square_matrix must call --r-unphased, not --r (removed in plink2)."""
+def test_pearson_r_matrix_uses_signed_r_unphased(monkeypatch):
+    """pearson_r_matrix must call signed --r-unphased, not squared --r2-unphased."""
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -212,18 +212,20 @@ def test_r_square_matrix_uses_r_unphased(monkeypatch):
 
     monkeypatch.setattr(_plink, "_run", fake_run)
     with pytest.raises((FileNotFoundError, Exception)):
-        _plink.r_square_matrix(["rs1260326"])
+        _plink.pearson_r_matrix(["rs1260326"])
 
     assert calls, "plink was not called"
     assert "--r-unphased" in calls[0], \
         f"Expected --r-unphased in plink cmd, got: {calls[0]}"
+    assert "--r2-unphased" not in calls[0], \
+        f"SharePro LD must use signed Pearson r, not r²: {calls[0]}"
     assert "--r" not in [a for a in calls[0] if a == "--r"], \
         "Deprecated --r flag must not be used"
 
 
-def test_r_square_matrix_reads_vars_file_for_snp_order(tmp_path, monkeypatch):
-    """r_square_matrix must use the .vars file for index/columns, not the input list."""
-    matrix_content = "1.0\t0.3\n0.3\t1.0\n"
+def test_pearson_r_matrix_reads_vars_file_for_snp_order_and_preserves_sign(tmp_path, monkeypatch):
+    """pearson_r_matrix must use .vars order and preserve negative Pearson r values."""
+    matrix_content = "1.0\t-0.3\n-0.3\t1.0\n"
     vars_content = "rs780094\nrs1260326\n"  # different order from input
 
     def fake_run(cmd, **kwargs):
@@ -235,13 +237,14 @@ def test_r_square_matrix_reads_vars_file_for_snp_order(tmp_path, monkeypatch):
     monkeypatch.setattr(_plink, "_run", fake_run)
     monkeypatch.setattr(_plink, "LD_REF_PREFIX", tmp_path / "dummy")
 
-    result = _plink.r_square_matrix(["rs1260326", "rs780094"])
+    result = _plink.pearson_r_matrix(["rs1260326", "rs780094"])
     assert list(result.index)   == ["rs780094", "rs1260326"]
     assert list(result.columns) == ["rs780094", "rs1260326"]
+    assert result.loc["rs780094", "rs1260326"] == pytest.approx(-0.3)
 
 
-def test_r_square_matrix_uses_maf_filter(monkeypatch):
-    """r_square_matrix must pass --maf 0.01 to plink to exclude monomorphic variants."""
+def test_pearson_r_matrix_uses_maf_filter(monkeypatch):
+    """pearson_r_matrix must pass --maf 0.01 to plink to exclude monomorphic variants."""
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -250,7 +253,7 @@ def test_r_square_matrix_uses_maf_filter(monkeypatch):
 
     monkeypatch.setattr(_plink, "_run", fake_run)
     with pytest.raises((FileNotFoundError, Exception)):
-        _plink.r_square_matrix(["rs1260326"])
+        _plink.pearson_r_matrix(["rs1260326"])
 
     assert calls, "plink was not called"
     assert "--maf" in calls[0], f"Expected --maf flag in plink cmd: {calls[0]}"
@@ -258,7 +261,7 @@ def test_r_square_matrix_uses_maf_filter(monkeypatch):
     assert float(maf_val) >= 0.01, f"MAF threshold should be >= 0.01, got {maf_val}"
 
 
-def test_r_square_matrix_drops_residual_nan_snps(tmp_path, monkeypatch):
+def test_pearson_r_matrix_drops_residual_nan_snps(tmp_path, monkeypatch):
     """Residual NaN after --maf (rare clustered variants) must be dropped, not raised.
 
     Real pattern: NaN is confined to the problem-SNP rows/columns; clean SNPs
@@ -283,7 +286,7 @@ def test_r_square_matrix_drops_residual_nan_snps(tmp_path, monkeypatch):
     monkeypatch.setattr(_plink, "_run", fake_run)
     monkeypatch.setattr(_plink, "LD_REF_PREFIX", tmp_path / "dummy")
 
-    result = _plink.r_square_matrix(["rs_clean1", "rs_clean2", "rs_a", "rs_b"])
+    result = _plink.pearson_r_matrix(["rs_clean1", "rs_clean2", "rs_a", "rs_b"])
     # Problem SNPs dropped; clean SNPs survive
     assert "rs_a" not in result.index, "rs_a must be dropped (has NaN)"
     assert "rs_b" not in result.index, "rs_b must be dropped (has NaN)"

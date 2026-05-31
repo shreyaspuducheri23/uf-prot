@@ -3,7 +3,7 @@
 08_coloc/sharepro.py
 Run SharePro colocalization (primary) on candidate proteins.
 
-Builds per-region z-score inputs and LD matrix (plink2 --r square),
+Builds per-region z-score inputs and signed Pearson LD matrix (plink2 --r-unphased square),
 then subprocesses into tools/SharePro_coloc/src/sharepro_loc.py.
 Requires ±1 Mb regions from 08_coloc/extract_regions.py.
 
@@ -21,7 +21,7 @@ import pandas as pd
 from scripts.lib.checkpoint import Checkpoint
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import COHORTS, COLOC_REGIONS_DIR, SHAREPRO_SCRIPT, cohort_dir
-from scripts.lib.plink import r_square_matrix
+from scripts.lib.plink import pearson_r_matrix
 from scripts.lib.progress import bar
 
 log = setup_logger("08_sharepro")
@@ -190,12 +190,12 @@ def run_sharepro(region_dir: Path, seqid: str, N_out: int) -> tuple[dict | None,
         log.debug(f"{seqid}: <5 common SNPs ({len(common_snps)}) — skipping SharePro")
         return None, "insufficient_common_snps"
 
-    # LD matrix first — plink may silently drop SNPs absent from the bfile.
+    # Signed Pearson LD matrix first — plink may silently drop SNPs absent from the bfile.
     # We derive the final SNP set from ld_mat.index so that the summary stats
     # and LD matrix are always the same size (SharePro asserts this).
     snp_candidates = sorted(common_snps)
     try:
-        ld_mat = r_square_matrix(snp_candidates)
+        ld_mat = pearson_r_matrix(snp_candidates)
     except Exception as exc:
         log.warning(f"{seqid}: LD matrix failed — {exc}")
         return None, "ld_matrix_failed"

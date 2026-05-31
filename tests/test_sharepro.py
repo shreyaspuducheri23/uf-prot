@@ -165,18 +165,27 @@ def _make_allele_region(
     return region
 
 
-def _capture_sharepro_inputs(monkeypatch, ld_snps: list[str] | None = None) -> dict[str, pd.DataFrame]:
+def _capture_sharepro_inputs(
+    monkeypatch,
+    ld_snps: list[str] | None = None,
+    ld_df: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["exp_bse"] = pd.read_csv(cmd[cmd.index("--z") + 1], sep="\t")
         captured["out_bse"] = pd.read_csv(cmd[cmd.index("--z") + 2], sep="\t")
+        captured["ld"] = pd.read_csv(cmd[cmd.index("--ld") + 1], sep="\t", header=None)
         save_prefix = cmd[cmd.index("--save") + 1]
         Path(save_prefix + ".sharepro.txt").write_text("cs\tshare\tvariantProb\n")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(ld_snps or sl))
+    monkeypatch.setattr(
+        _mod,
+        "pearson_r_matrix",
+        lambda sl: ld_df if ld_df is not None else _identity_ld(ld_snps or sl),
+    )
     return captured
 
 
@@ -216,7 +225,7 @@ def test_run_sharepro_uses_z_and_save_flags(tmp_path, monkeypatch):
 
     snps = [f"rs{i}" for i in range(10)]
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(sl))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: _identity_ld(sl))
 
     _mod.run_sharepro(_make_region(tmp_path, snps), "test_seqid", N_out=5000)
 
@@ -241,7 +250,7 @@ def test_run_sharepro_parses_sharepro_txt_not_json(tmp_path, monkeypatch):
 
     snps = [f"rs{i}" for i in range(10)]
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(sl))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: _identity_ld(sl))
 
     result, err = _mod.run_sharepro(_make_region(tmp_path, snps), "test_seqid", N_out=5000)
 
@@ -259,7 +268,7 @@ def test_run_sharepro_empty_output_gives_pp_h4_zero(tmp_path, monkeypatch):
 
     snps = [f"rs{i}" for i in range(10)]
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(sl))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: _identity_ld(sl))
 
     result, err = _mod.run_sharepro(_make_region(tmp_path, snps), "test_seqid", N_out=5000)
 
@@ -294,6 +303,19 @@ def test_run_sharepro_flips_reverse_allele_outcome_effects(tmp_path, monkeypatch
     assert out_aligned["EAF"].tolist() == pytest.approx([0.2] * 6)
 
 
+def test_run_sharepro_writes_signed_pearson_ld_values(tmp_path, monkeypatch):
+    snps = [f"rs{i}" for i in range(1, 7)]
+    signed_ld = _identity_ld(snps)
+    signed_ld.iloc[0, 1] = -0.42
+    signed_ld.iloc[1, 0] = -0.42
+    captured = _capture_sharepro_inputs(monkeypatch, ld_df=signed_ld)
+
+    result, err = _mod.run_sharepro(_make_region(tmp_path, snps), "signed_ld", N_out=5000)
+
+    assert result is not None, f"Expected success, got failure: {err}"
+    assert captured["ld"].iloc[0, 1] == pytest.approx(-0.42)
+
+
 def test_run_sharepro_excludes_incompatible_same_rsid_variants(tmp_path, monkeypatch):
     snps = [f"rs{i}" for i in range(1, 7)]
     region = _make_allele_region(
@@ -305,7 +327,7 @@ def test_run_sharepro_excludes_incompatible_same_rsid_variants(tmp_path, monkeyp
         out_ea="C",
         out_oa="T",
     )
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: pytest.fail("LD should not be requested"))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: pytest.fail("LD should not be requested"))
 
     result, reason = _mod.run_sharepro(region, "incompatible_same_rsid", N_out=5000)
 
@@ -324,7 +346,7 @@ def test_run_sharepro_excludes_incompatible_position_fallback_variants(tmp_path,
         out_ea="C",
         out_oa="T",
     )
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: pytest.fail("LD should not be requested"))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: pytest.fail("LD should not be requested"))
 
     result, reason = _mod.run_sharepro(region, "incompatible_position", N_out=5000)
 
@@ -373,7 +395,7 @@ def test_run_sharepro_ld_snp_subset_aligns_with_sumstats(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     # LD stub returns only 7×7 matrix
-    monkeypatch.setattr(_mod, "r_square_matrix", lambda sl: _identity_ld(surviving))
+    monkeypatch.setattr(_mod, "pearson_r_matrix", lambda sl: _identity_ld(surviving))
 
     result, err = _mod.run_sharepro(_make_region(tmp_path, snps), "test_seqid", N_out=5000)
 
