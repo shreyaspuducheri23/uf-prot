@@ -100,6 +100,10 @@ class TestResolveTss:
 
         def side_effect(url, headers=None, timeout=None):
             if "genenames.org" in url:
+                if "/fetch/symbol/" in url:
+                    symbol = url.rstrip("/").split("/")[-1]
+                    docs = hgnc.get(("fetch_symbol", symbol), [])
+                    return MockResponse({"response": {"docs": docs}})
                 field, symbol = url.rstrip("/").split("/")[-2:]
                 docs = [{"symbol": s} for s in hgnc.get((field, symbol), [])]
                 return MockResponse({"response": {"docs": docs}})
@@ -157,6 +161,20 @@ class TestResolveTss:
         assert result.resolved_symbol == "NEW"
         assert result.requested_symbol == "OLD"
         assert "NEW" in result.attempts
+
+    def test_current_symbol_prev_symbol_rescue_for_legacy_build(self):
+        with patch(
+            "scripts.lib.cis.requests.get",
+            side_effect=self._mock_get(
+                {"OLD": self._ensembl_payload(-1)},
+                {("fetch_symbol", "NEW"): [{"symbol": "NEW", "prev_symbol": ["OLD"]}]},
+            ),
+        ):
+            result = resolve_tss("NEW", "hg19")
+        assert result.resolved
+        assert result.tier == 2
+        assert result.resolved_symbol == "OLD"
+        assert result.tss == 2000
 
     def test_tier_3_alias_symbol_rescue(self):
         with patch(

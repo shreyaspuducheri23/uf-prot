@@ -74,6 +74,22 @@ def _hgnc_approved_for_field(field: str, gene_symbol: str) -> list[str]:
         return []
 
 
+def _hgnc_doc_for_symbol(gene_symbol: str) -> dict:
+    """Return the HGNC document for an approved symbol, or {} on a miss."""
+    url = f"https://rest.genenames.org/fetch/symbol/{quote(gene_symbol, safe='')}"
+    try:
+        resp = requests.get(url, headers=_HGNC_HEADERS, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = data.get("response", {}).get("docs", [])
+        if not docs:
+            return {}
+        return docs[0]
+    except Exception as exc:
+        log.debug(f"HGNC fetch failed for symbol={gene_symbol!r}: {exc}")
+        return {}
+
+
 @lru_cache(maxsize=1)
 def _load_overrides() -> dict[tuple[str, str], tuple[str, int, str]]:
     """Load curated TSS overrides keyed by (GENE_SYMBOL_UPPER, build)."""
@@ -139,6 +155,25 @@ def resolve_tss(gene_symbol: str, build: str) -> TssResolution:
     hit = try_ensembl(requested)
     if hit:
         return resolved(requested, hit[0], hit[1], 1, "Ensembl")
+
+    hgnc_doc = _hgnc_doc_for_symbol(requested)
+    for field in ("prev_symbol", "alias_symbol"):
+        values = hgnc_doc.get(field, [])
+        if isinstance(values, str):
+            values = [values]
+        for prior_symbol in values:
+            prior_symbol = str(prior_symbol)
+            if prior_symbol in tried:
+                continue
+            hit = try_ensembl(prior_symbol)
+            if hit:
+                return resolved(
+                    prior_symbol,
+                    hit[0],
+                    hit[1],
+                    2,
+                    f"HGNC current symbol {requested} {field} -> {prior_symbol}",
+                )
 
     for approved in _hgnc_approved_for_field("prev_symbol", requested):
         hit = try_ensembl(approved)
