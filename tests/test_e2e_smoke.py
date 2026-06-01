@@ -5,7 +5,6 @@ or R harmonisation. It builds a tiny synthetic ARIC input and Kim outcome file,
 then runs steps 02→05 as black-box commands.
 """
 
-import importlib
 import json
 import os
 import subprocess
@@ -15,10 +14,7 @@ import pandas as pd
 import pysam
 import pytest
 
-from scripts.lib.fdr import add_fdr
 from scripts.lib.schema import NORM_COLS
-
-_assemble_mod = importlib.import_module("scripts.09_assemble.assemble")
 
 
 PROTEINS = [
@@ -318,27 +314,6 @@ class TestEndToEndSmoke:
         seqids = {f.stem for f in files}
         assert "SeqId_P1" in seqids
         assert "SeqId_P2" in seqids
-
-    def test_fdr_tiering_produces_expected_columns(self, real_run):
-        tier = _assemble_mod.tier
-
-        frames = []
-        for tsv in real_run["harmonised_dir"].glob("*.tsv"):
-            df = pd.read_csv(tsv, sep="\t")
-            df["seqid"] = tsv.stem
-            frames.append(df)
-
-        mr = pd.concat(frames, ignore_index=True)
-        mr["pval"] = mr.get("pval.exposure", pd.Series([1e-9] * len(mr)))
-        mr = add_fdr(mr, pval_col="pval", alpha=0.05)
-        mr["passes_sensitivity"] = True
-        mr["sharepro_coloc_positive"] = True
-        mr["coloc_abf_positive"] = True
-        mr["tier"] = mr.apply(tier, axis=1)
-
-        assert "tier" in mr.columns
-        assert len(mr) == 2
-        assert all(mr["tier"] == "Tier1_replicated")
 
     def test_extraction_output_has_required_norm_cols(self, real_run):
         for tsv in real_run["extracted_dir"].glob("*.tsv"):

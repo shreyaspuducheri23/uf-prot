@@ -13,12 +13,14 @@ Analysis structure
 PRIMARY_COHORT ("UKB_female") is the discovery cohort: the outcome GWAS
 (Kim et al.) is female-only, so the sex-matched UKB_female pQTL data is the
 appropriate primary source.  Gene inclusion requires UKB_female FDR < 0.05.
-BH-FDR is applied across UKB_female p-values only.
+The UKB_female q-value is copied from the per-cohort MR step, where BH-FDR is
+applied across all tested UKB_female proteins.
 
 Three independent cohorts (ARIC_EA, deCODE, Fenland) serve as replication:
 they contribute a replication IVW meta-estimate and replication counts, but
 do not gate discovery.  UKB_PPP is excluded from replication because it draws
-from the same UK Biobank participants as UKB_female (double-counting).
+from the same UK Biobank participants as UKB_female (double-counting). It is
+retained only as a per-cohort display/reference estimate.
 
 Genes where UKB_female data is absent (protein not in ProteoNexus panel) are
 written separately to gene_summary_no_ukb_female.tsv for reference.
@@ -87,25 +89,6 @@ def meta_analysis(betas: List[float], ses: List[float]) -> Dict:
         Q_pval=Q_pval,
         direction_consistent=direction_consistent,
     )
-
-
-# ── BH-FDR ───────────────────────────────────────────────────────────────────
-
-def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
-    """Benjamini-Hochberg FDR correction, returning q-values (same length)."""
-    n = len(pvals)
-    if n == 0:
-        return np.array([])
-    order = np.argsort(pvals)
-    ranks = np.empty(n, dtype=int)
-    ranks[order] = np.arange(1, n + 1)
-    q = pvals * n / ranks
-    q_sorted = q[order]
-    for i in range(n - 2, -1, -1):
-        q_sorted[i] = min(q_sorted[i], q_sorted[i + 1])
-    result = np.empty(n)
-    result[order] = q_sorted
-    return np.minimum(result, 1.0)
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -183,7 +166,11 @@ def build_gene_summary(
         no_primary_summary: genes that passed FDR in other cohorts but have
                             no primary_cohort data (reference only)
     """
-    sensitivity_cohorts = [c for c in COHORTS if c != primary_cohort]
+    sensitivity_cohorts = (
+        SENSITIVITY_COHORTS
+        if primary_cohort == PRIMARY_COHORT
+        else [c for c in SENSITIVITY_COHORTS if c != primary_cohort]
+    )
 
     # All genes with any FDR pass
     fdr_genes = set(df.loc[df["fdr_pass"] == True, "gene"])
@@ -218,23 +205,33 @@ def build_gene_summary(
                 primary_data = _cohort_dict(primary_row.iloc[0])
                 primary_data["n_seqids"] = n_seqids_map.get(primary_cohort, 1)
 
-            # ── Sensitivity cohort data ──────────────────────────────────────
-            sens_rows = gdf_dedup[gdf_dedup["cohort"].isin(sensitivity_cohorts)]
+            # ── Non-primary cohort data ──────────────────────────────────────
+            cohort_rows = gdf_dedup[gdf_dedup["cohort"] != primary_cohort]
             cohort_data: Dict[str, dict] = {}
-            for _, row in sens_rows.iterrows():
+            for _, row in cohort_rows.iterrows():
                 c = row["cohort"]
                 cd = _cohort_dict(row)
                 cd["n_seqids"] = n_seqids_map.get(c, 1)
                 cohort_data[c] = cd
 
-            # Replication meta-analysis (IVW of sensitivity cohorts)
-            rep_betas = [cd["beta"] for cd in cohort_data.values()]
-            rep_ses   = [cd["se"]   for cd in cohort_data.values()]
+            # Replication meta-analysis (IVW of independent sensitivity cohorts)
+            replication_data = [
+                cohort_data[c] for c in sensitivity_cohorts if c in cohort_data
+            ]
+            rep_betas = [cd["beta"] for cd in replication_data]
+            rep_ses   = [cd["se"]   for cd in replication_data]
             rep_ma    = meta_analysis(rep_betas, rep_ses) if rep_betas else None
 
-            # Pooled meta-analysis (all cohorts, kept for reference)
-            all_betas = ([primary_data["beta"]] if primary_data else []) + rep_betas
-            all_ses   = ([primary_data["se"]]   if primary_data else []) + rep_ses
+            # Pooled meta-analysis is restricted to the primary cohort plus
+            # independent replication cohorts; UKB_PPP is display-only.
+            all_betas = (
+                ([primary_data["beta"]] if primary_data else [])
+                + [cd["beta"] for cd in replication_data]
+            )
+            all_ses = (
+                ([primary_data["se"]] if primary_data else [])
+                + [cd["se"] for cd in replication_data]
+            )
             pooled_ma = meta_analysis(all_betas, all_ses) if all_betas else None
 
             # Replication direction agreement: "x/n" where x = cohorts matching
@@ -247,12 +244,14 @@ def build_gene_summary(
                 direction_consistent_replication = ""
 
             n_replication_tested  = len(rep_betas)
-            n_replication_fdr     = sum(1 for cd in cohort_data.values() if cd["fdr_pass"])
-            n_replication_nominal = sum(1 for cd in cohort_data.values() if cd["pval"] < 0.05)
+            n_replication_fdr     = sum(1 for cd in replication_data if cd["fdr_pass"])
+            n_replication_nominal = sum(1 for cd in replication_data if cd["pval"] < 0.05)
 
             # ── Colocalization ───────────────────────────────────────────────
             all_cohort_data = ({primary_cohort: primary_data} if primary_data else {})
-            all_cohort_data.update(cohort_data)
+            all_cohort_data.update(
+                {cohort: cohort_data[cohort] for cohort in sensitivity_cohorts if cohort in cohort_data}
+            )
 
             sp_pp4  = [cd["sharepro_PP_H4"]  for cd in all_cohort_data.values() if not np.isnan(cd["sharepro_PP_H4"])]
             abf_pp4 = [cd["coloc_abf_PP_H4"] for cd in all_cohort_data.values() if not np.isnan(cd["coloc_abf_PP_H4"])]
@@ -286,7 +285,7 @@ def build_gene_summary(
                 "primary_OR_lo95":  primary_data["OR_lo95"] if primary_data else float("nan"),
                 "primary_OR_hi95":  primary_data["OR_hi95"] if primary_data else float("nan"),
                 "primary_pval":     primary_data["pval"]    if primary_data else float("nan"),
-                "primary_fdr_q":    float("nan"),  # filled after BH pass
+                "primary_fdr_q":    primary_data["fdr_q"] if primary_data else float("nan"),
                 "primary_n_snps":   primary_data["n_snps"]  if primary_data else float("nan"),
                 "primary_coloc_sharepro_PP_H4":  primary_data["sharepro_PP_H4"]  if primary_data else float("nan"),
                 "primary_coloc_abf_PP_H4":       primary_data["coloc_abf_PP_H4"] if primary_data else float("nan"),
@@ -302,7 +301,7 @@ def build_gene_summary(
                 "replication_meta_pval":     rep_ma["meta_pval"]     if rep_ma else float("nan"),
                 "replication_I2":            rep_ma["I2"]            if rep_ma else float("nan"),
 
-                # Pooled (all cohorts, reference)
+                # Pooled (primary + independent replication, reference)
                 "pooled_meta_OR":        pooled_ma["meta_OR"]           if pooled_ma else float("nan"),
                 "pooled_meta_OR_lo95":   pooled_ma["meta_OR_lo95"]      if pooled_ma else float("nan"),
                 "pooled_meta_OR_hi95":   pooled_ma["meta_OR_hi95"]      if pooled_ma else float("nan"),
@@ -348,7 +347,6 @@ def build_gene_summary(
     primary_df = pd.DataFrame(primary_rows) if primary_rows else pd.DataFrame()
 
     if not primary_df.empty:
-        primary_df["primary_fdr_q"] = _bh_fdr(primary_df["primary_pval"].values)
         primary_df = primary_df.sort_values("primary_pval").reset_index(drop=True)
 
     # Build reference table (no UKB_female data) using previous all-cohort logic

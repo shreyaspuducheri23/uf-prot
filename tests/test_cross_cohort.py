@@ -189,6 +189,30 @@ def test_primary_and_replication_columns():
     assert row["direction_consistent_replication"] == "2/2"
 
 
+def test_ukb_ppp_excluded_from_analyses_but_retained():
+    """UKB_PPP is retained as a cohort column but excluded from summaries."""
+    rows = [
+        _make_row("GENE_A", PRIMARY, "seq_f", beta=-0.4, se=0.05, pval=1e-10, fdr_pass=True),
+        _make_row("GENE_A", "deCODE", "seq_d", beta=-0.3, se=0.08, pval=2e-5, fdr_pass=True),
+        _make_row("GENE_A", "ARIC_EA", "seq_a", beta=-0.35, se=0.06, pval=5e-8, fdr_pass=True),
+        _make_row("GENE_A", "UKB_PPP", "seq_u", beta=0.8, se=0.02, pval=1e-30, fdr_pass=True),
+    ]
+    df = pd.DataFrame(rows)
+    primary_summary, _ = build_gene_summary(df, primary_cohort=PRIMARY)
+    row = primary_summary.iloc[0]
+
+    rep_ma = meta_analysis([-0.3, -0.35], [0.08, 0.06])
+    pooled_ma = meta_analysis([-0.4, -0.3, -0.35], [0.05, 0.08, 0.06])
+    assert row["n_replication_tested"] == 2
+    assert row["n_replication_fdr"] == 2
+    assert row["n_cohorts_tested"] == 3
+    assert row["direction_consistent_replication"] == "2/2"
+    assert abs(row["replication_meta_OR"] - rep_ma["meta_OR"]) < 1e-6
+    assert abs(row["pooled_meta_OR"] - pooled_ma["meta_OR"]) < 1e-6
+    assert row["seqid_UKB_PPP"] == "seq_u"
+    assert abs(row["OR_UKB_PPP"] - math.exp(0.8)) < 1e-6
+
+
 # ── 7. Direction flip in replication flagged ─────────────────────────────────
 
 def test_direction_flip_in_replication():
@@ -254,18 +278,15 @@ def test_sorted_by_primary_pval():
 
 # ── 10. primary_fdr_q applied over primary p-values only ─────────────────────
 
-def test_primary_fdr_q_computed():
+def test_primary_fdr_q_uses_upstream_per_cohort_q_value():
     rows = [
-        _make_row("GENE_A", PRIMARY, "seq1", beta=-0.5, se=0.05, pval=1e-10, fdr_pass=True),
-        _make_row("GENE_B", PRIMARY, "seq2", beta=-0.3, se=0.05, pval=1e-4,  fdr_pass=True),
+        _make_row("GENE_A", PRIMARY, "seq1", beta=-0.5, se=0.05, pval=1e-10, fdr_pass=True, fdr_q=0.003),
+        _make_row("GENE_B", PRIMARY, "seq2", beta=-0.3, se=0.05, pval=1e-4, fdr_pass=True, fdr_q=0.02),
     ]
     df = pd.DataFrame(rows)
     primary_summary, _ = build_gene_summary(df, primary_cohort=PRIMARY)
 
     assert "primary_fdr_q" in primary_summary.columns
     assert not primary_summary["primary_fdr_q"].isna().any()
-    # FDR q-values should be ≥ their corresponding p-values
-    assert (primary_summary["primary_fdr_q"] >= primary_summary["primary_pval"]).all()
-    # Lower p → lower q
-    sorted_df = primary_summary.sort_values("primary_pval")
-    assert sorted_df["primary_fdr_q"].is_monotonic_increasing
+    q_by_gene = dict(zip(primary_summary["gene"], primary_summary["primary_fdr_q"]))
+    assert q_by_gene == {"GENE_A": 0.003, "GENE_B": 0.02}

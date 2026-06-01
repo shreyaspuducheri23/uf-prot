@@ -2,12 +2,11 @@
 """
 09_assemble/assemble.py
 Join MR, sensitivity, SharePro, and coloc.abf results into final_results.tsv.
-Applies tiering and prints a console summary.
+Prints a per-cohort console summary of FDR-passing associations.
 
 Usage:
   python scripts/09_assemble/assemble.py
 """
-import logging
 import sys
 
 import pandas as pd
@@ -61,19 +60,6 @@ def load_coloc_abf() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def tier(row: pd.Series) -> str:
-    passes_sens = row.get("passes_sensitivity", False)
-    if row.get("fdr_pass") and passes_sens and row.get("sharepro_coloc_positive"):
-        if row.get("coloc_abf_positive"):
-            return "Tier1_replicated"
-        return "Tier1"
-    if row.get("fdr_pass") and passes_sens:
-        return "Tier2"
-    if row.get("fdr_pass"):
-        return "Tier2_nosens"
-    return "Tier3"
-
-
 def main() -> None:
     with RunManifest("09_assemble/assemble.py") as manifest:
         mr = load_mr()
@@ -119,12 +105,7 @@ def main() -> None:
                 )
             mr["passes_sensitivity"] = mr["passes_sensitivity"].fillna(False)
 
-        mr["tier"] = mr.apply(tier, axis=1)
-
-        # Sort by tier, then FDR q
-        tier_order = {"Tier1_replicated": 0, "Tier1": 1, "Tier2": 2, "Tier2_nosens": 3, "Tier3": 4}
-        mr["_tier_rank"] = mr["tier"].map(tier_order).fillna(99)
-        mr = mr.sort_values(["_tier_rank", "fdr_q"]).drop(columns=["_tier_rank"])
+        mr = mr.sort_values(["cohort", "fdr_q"], na_position="last").reset_index(drop=True)
 
         FINAL_RESULTS.parent.mkdir(parents=True, exist_ok=True)
         mr.to_csv(FINAL_RESULTS, sep="\t", index=False)
@@ -134,16 +115,17 @@ def main() -> None:
         print("\n" + "=" * 60)
         print("RESULTS SUMMARY")
         print("=" * 60)
-        for t in ["Tier1_replicated", "Tier1", "Tier2", "Tier2_nosens"]:
-            subset = mr[mr["tier"] == t]
-            if not subset.empty:
-                print(f"\n{t}: {len(subset)} protein-cohort associations")
-                for _, row in subset.head(10).iterrows():
-                    gene = row.get("gene", row["seqid"])
-                    or_val = row.get("OR", "NA")
-                    p = row.get("pval", "NA")
-                    q = row.get("fdr_q", "NA")
-                    print(f"  {gene:20s} OR={or_val:.3f}  p={p:.2e}  q={q:.3f}  [{row['cohort']}]")
+        for cohort in sorted(mr["cohort"].dropna().unique()):
+            subset = mr[mr["cohort"] == cohort]
+            fdr_count = int(subset.get("fdr_pass", pd.Series(False, index=subset.index)).fillna(False).sum())
+            print(f"\n{cohort}: {fdr_count} FDR-passing / {len(subset)} total associations")
+            top = subset.sort_values("pval", na_position="last").head(5)
+            for _, row in top.iterrows():
+                gene = row.get("gene", row["seqid"])
+                or_val = row.get("OR", float("nan"))
+                p = row.get("pval", float("nan"))
+                q = row.get("fdr_q", float("nan"))
+                print(f"  {gene:20s} OR={or_val:.3f}  p={p:.2e}  q={q:.3f}")
         print("=" * 60 + "\n")
 
         manifest.n_units = len(mr)

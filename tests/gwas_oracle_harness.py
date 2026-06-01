@@ -19,7 +19,6 @@ from scripts.lib.schema import ProteinMeta
 _clump_mod = importlib.import_module("scripts.03_clump.clump")
 _liftover_mod = importlib.import_module("scripts.04_liftover.instruments_to_hg38")
 _harm_mod = importlib.import_module("scripts.05_harmonise.harmonise")
-_assemble_mod = importlib.import_module("scripts.09_assemble.assemble")
 
 
 @dataclass(frozen=True)
@@ -262,8 +261,8 @@ def run_oracle_pipeline(
     }
 
 
-def compute_oracle_mr_and_tiers(run_artifacts: dict[str, Any]) -> pd.DataFrame:
-    """Compute deterministic MR-like summaries + tiers for oracle assertions."""
+def compute_oracle_mr(run_artifacts: dict[str, Any]) -> pd.DataFrame:
+    """Compute deterministic MR-like summaries for oracle assertions."""
     harm_dir: Path = run_artifacts["harmonised_dir"]
     manifest = run_artifacts["manifest"].copy()
     cohort = "ARIC_EA"
@@ -328,7 +327,6 @@ def compute_oracle_mr_and_tiers(run_artifacts: dict[str, Any]) -> pd.DataFrame:
         raise ValueError("No harmonised outputs were produced for oracle scenario")
 
     summary = add_fdr(summary, pval_col="pval", alpha=0.05)
-    summary["tier"] = summary.apply(_assemble_mod.tier, axis=1)
     return summary.merge(manifest, on="seqid", how="left", suffixes=("", "_oracle"))
 
 

@@ -126,14 +126,6 @@ for (i in seq_len(n_proteins)) {
   target_beta <- if (class_i == "causal") ivw_beta else 0.0
 
   expected_sign <- if (target_beta > 0) 1L else if (target_beta < 0) -1L else 0L
-  expected_tier <- if (class_i == "causal" && scenario != "coloc_mismatch") {
-    "Tier1_replicated"
-  } else if (class_i == "causal" && scenario == "coloc_mismatch") {
-    "Tier2"
-  } else {
-    "Tier3"
-  }
-
   manifest_rows[[i]] <- data.table(
     seqid = seqid,
     gene = gene,
@@ -144,7 +136,6 @@ for (i in seq_len(n_proteins)) {
     expected_effect_sign = expected_sign,
     target_mr_beta = target_beta,
     beta_tolerance = ifelse(class_i == "causal", 0.08, 0.12),
-    expected_tier_tendency = expected_tier,
     expected_coloc_positive = as.logical(class_i == "causal" && scenario != "coloc_mismatch"),
     expected_weak = as.logical(class_i == "weak"),
     expected_null = as.logical(class_i == "null"),

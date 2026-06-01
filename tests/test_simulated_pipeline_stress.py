@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from tests.gwas_oracle_harness import (
-    compute_oracle_mr_and_tiers,
+    compute_oracle_mr,
     generate_oracle_dataset,
     run_full_oracle_02_to_09,
     run_oracle_pipeline,
@@ -20,7 +20,7 @@ def _assert_non_empty(summary: pd.DataFrame) -> None:
 def test_oracle_proxy_branch_executes_and_is_detected(tmp_path):
     bundle = generate_oracle_dataset(tmp_path, scenario="proxy_branch", seed=21, n_proteins=12, snps_per_protein=8)
     artifacts = run_oracle_pipeline(tmp_path, bundle, force_proxy_branch=True, use_real_harmonise_r=False)
-    summary = compute_oracle_mr_and_tiers(artifacts)
+    summary = compute_oracle_mr(artifacts)
     _assert_non_empty(summary)
 
     expected_proxy = summary[summary["expected_proxy"] == True]
@@ -43,32 +43,33 @@ def test_oracle_proxy_branch_executes_and_is_detected(tmp_path):
 def test_oracle_coloc_mismatch_downgrades_causal_targets(tmp_path):
     bundle = generate_oracle_dataset(tmp_path, scenario="coloc_mismatch", seed=31, n_proteins=12, snps_per_protein=8)
     artifacts = run_oracle_pipeline(tmp_path, bundle, force_proxy_branch=False, use_real_harmonise_r=False)
-    summary = compute_oracle_mr_and_tiers(artifacts)
+    summary = compute_oracle_mr(artifacts)
     _assert_non_empty(summary)
 
     causal = summary[summary["class"] == "causal"]
-    assert (causal["tier"].isin(["Tier1", "Tier1_replicated"])).sum() == 0
-    assert (causal["tier"] == "Tier2").mean() >= 0.6
+    assert causal["sharepro_coloc_positive"].sum() == 0
+    assert causal["coloc_abf_positive"].sum() == 0
+    assert causal["fdr_pass"].mean() >= 0.6
 
 
 @pytest.mark.gwas_oracle_slow
 def test_oracle_pleiotropy_guardrail(tmp_path):
     bundle = generate_oracle_dataset(tmp_path, scenario="pleiotropy_guardrail", seed=41, n_proteins=12, snps_per_protein=8)
     artifacts = run_oracle_pipeline(tmp_path, bundle, force_proxy_branch=False, use_real_harmonise_r=False)
-    summary = compute_oracle_mr_and_tiers(artifacts)
+    summary = compute_oracle_mr(artifacts)
     _assert_non_empty(summary)
 
     pleio = summary[summary["class"] == "pleiotropic"]
     assert not pleio.empty
-    promoted = pleio["tier"].isin(["Tier1", "Tier1_replicated", "Tier2"]).mean()
-    assert promoted <= 0.25, f"Pleiotropic proteins promoted too often: {promoted:.3f}"
+    promoted = (pleio["fdr_pass"] & pleio["passes_sensitivity"]).mean()
+    assert promoted <= 0.25, f"Pleiotropic proteins passed FDR and sensitivity too often: {promoted:.3f}"
 
 
 @pytest.mark.gwas_oracle_slow
 def test_oracle_weak_and_null_control(tmp_path):
     bundle = generate_oracle_dataset(tmp_path, scenario="weak_instrument_guardrail", seed=51, n_proteins=12, snps_per_protein=8)
     artifacts = run_oracle_pipeline(tmp_path, bundle, force_proxy_branch=False, use_real_harmonise_r=False)
-    summary = compute_oracle_mr_and_tiers(artifacts)
+    summary = compute_oracle_mr(artifacts)
     _assert_non_empty(summary)
 
     manifest = bundle.manifest.copy()
@@ -76,11 +77,11 @@ def test_oracle_weak_and_null_control(tmp_path):
     null_expected = set(manifest.loc[manifest["class"] == "null", "seqid"].astype(str))
     seen = set(summary["seqid"].astype(str))
 
-    # Weak/null proteins may be filtered out before MR (expected); if present, they must remain deprioritized.
+    # Weak/null proteins may be filtered out before MR (expected); if present, they should not pass FDR often.
     weak = summary[summary["class"] == "weak"]
     if not weak.empty:
-        weak_top = weak["tier"].isin(["Tier1", "Tier1_replicated", "Tier2"]).mean()
-        assert weak_top <= 0.25, f"Weak instruments promoted too often: {weak_top:.3f}"
+        weak_fp = weak["fdr_pass"].mean()
+        assert weak_fp <= 0.25, f"Weak instruments passed FDR too often: {weak_fp:.3f}"
     else:
         assert weak_expected.isdisjoint(seen), "Weak class missing from summary but unexpectedly present as non-weak rows"
 
@@ -99,10 +100,9 @@ def test_oracle_full_02_to_09_integration(tmp_path):
 
     final = pd.read_csv(final_path, sep="\t")
     assert not final.empty, "final_results.tsv is empty"
-    assert "tier" in final.columns
 
-    # Integrated stability check: tiered output should contain at least one non-Tier3 protein.
-    assert (final["tier"] != "Tier3").any(), "No prioritized proteins found in full synthetic run"
+    # Integrated stability check: output should contain at least one FDR-passing protein.
+    assert final["fdr_pass"].fillna(False).any(), "No FDR-passing proteins found in full synthetic run"
 
     mr_path = final_path.parent / "ARIC_EA" / "mr_results.tsv"
     assert mr_path.exists(), "mr_results.tsv missing after full 02→09 run"
@@ -123,6 +123,6 @@ def test_oracle_close_loci_duplicate_position_behavior(tmp_path, caplog):
     )
     with caplog.at_level("WARNING", logger="05_harmonise"):
         artifacts = run_oracle_pipeline(tmp_path, bundle, force_proxy_branch=False, use_real_harmonise_r=False)
-    summary = compute_oracle_mr_and_tiers(artifacts)
+    summary = compute_oracle_mr(artifacts)
     _assert_non_empty(summary)
     assert "duplicate" in caplog.text.lower()

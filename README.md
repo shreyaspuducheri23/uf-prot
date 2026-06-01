@@ -132,8 +132,15 @@ uv run python scripts/08_coloc/extract_regions.py --cohort all   # ±1 Mb region
 uv run python scripts/08_coloc/sharepro.py --cohort all          # primary
 Rscript scripts/08_coloc/coloc_abf.R                             # sensitivity
 
-# 9. Assemble tiered final results table
+# 9. Assemble final results table
 uv run python scripts/09_assemble/assemble.py
+
+# 9b. Build UKB_female-primary cross-cohort gene summary
+uv run python scripts/09_assemble/cross_cohort.py
+
+# 10. Generate presentation figures
+uv run python scripts/10_present/forest_plot.py
+uv run python scripts/10_present/volcano_plot.py
 ```
 
 All Python scripts accept `--limit N` to cap the number of proteins (for testing). Scripts that have already completed proteins skip them on re-run — Ctrl-C safe.
@@ -190,7 +197,8 @@ scripts/
   06_mr/                    # run_mr.R
   07_sensitivity/           # run_sensitivity.R
   08_coloc/                 # extract_regions.py, sharepro.py, coloc_abf.R
-  09_assemble/              # assemble.py
+  09_assemble/              # assemble.py, cross_cohort.py
+  10_present/               # forest and volcano presentation plots
 
 processed_data/
   {ARIC_EA,deCODE,UKB_PPP,Fenland}/
@@ -207,7 +215,8 @@ processed_data/
   outcome/                  # Kim metadata JSON
   coloc/                    # SharePro + coloc.abf results by cohort
   mr_all_cohorts.tsv        # combined MR results across cohorts
-  final_results.tsv         # tiered output (step 09)
+  final_results.tsv         # assembled per-cohort output (step 09)
+  gene_summary.tsv          # UKB_female FDR-passing genes + replication summary
 
 tools/
   SharePro_coloc/           # cloned from github.com/zhwm/SharePro_coloc at setup
@@ -222,16 +231,15 @@ logs/
   <step>_<timestamp>.log    # full timestamped log per run
 ```
 
-### Results tiering
+### Final results
 
-`processed_data/final_results.tsv` assigns each protein-cohort association to a tier:
-
-| Tier               | Criteria                                                                       |
-|--------------------|--------------------------------------------------------------------------------|
-| Tier 1 (replicated)| FDR < 0.05 + passes sensitivity + SharePro PP.H4 ≥ 0.8 + coloc.abf agrees   |
-| Tier 1             | FDR < 0.05 + passes sensitivity + SharePro PP.H4 ≥ 0.8                       |
-| Tier 2             | FDR < 0.05 + passes sensitivity (colocalization inconclusive)                 |
-| Tier 2 (no sens)   | FDR < 0.05, sensitivity not computable (single-SNP Wald ratio instruments)    |
+`processed_data/final_results.tsv` contains one row per protein-cohort MR
+association with sensitivity and colocalization annotations when available.
+`processed_data/gene_summary.tsv` uses UKB_female as the primary discovery
+cohort and summarizes independent replication across ARIC_EA, deCODE, and
+Fenland. UKB_PPP is retained as a cohort-specific reference for display but
+excluded from pooled/meta summaries because it overlaps UK Biobank
+participants.
 
 ### Tests
 
