@@ -11,7 +11,6 @@ from scripts.lib.paths import (
     ARIC_EA_DIR,
     ARIC_SEQID,
     CHAIN_HG19_TO_HG38,
-    DECODE_URLS,
     KIM_GWAS,
     LD_REF_PREFIX,
 )
@@ -25,7 +24,6 @@ def _assert_exists(path: Path, label: str) -> None:
 def test_required_local_assets_present() -> None:
     _assert_exists(ARIC_SEQID, "ARIC seqid index")
     _assert_exists(ARIC_EA_DIR, "ARIC EA directory")
-    _assert_exists(DECODE_URLS, "deCODE bulk URL list")
     _assert_exists(CHAIN_HG19_TO_HG38, "hg19->hg38 liftover chain")
     _assert_exists(KIM_GWAS, "Kim GWAS bgz file")
     _assert_exists(Path(f"{KIM_GWAS}.tbi"), "Kim GWAS tabix index")

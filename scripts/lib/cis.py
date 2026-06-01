@@ -183,7 +183,7 @@ def _load_tss_cache(cache_path: Path, uppercase: bool = False) -> dict[str, tupl
     if not cache_path.exists():
         return {}
     try:
-        df = pd.read_csv(cache_path, sep="\t", dtype=str)
+        df = pd.read_csv(cache_path, sep="\t", dtype=str, keep_default_na=False)
     except Exception as exc:
         log.warning(f"TSS cache read error ({cache_path}): {exc}")
         return {}
@@ -209,7 +209,7 @@ def _save_tss_cache(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     rows = rows or []
     existing = (
-        pd.read_csv(cache_path, sep="\t", dtype=str)
+        pd.read_csv(cache_path, sep="\t", dtype=str, keep_default_na=False)
         if cache_path.exists()
         else pd.DataFrame(columns=_TSS_CACHE_COLUMNS)
     )

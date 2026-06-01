@@ -5,7 +5,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from scripts.lib.decode_stream import parse_bulk_urls, iter_decode_rows, stream_s3_cis_rows
-from scripts.lib.paths import DECODE_URLS
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +57,19 @@ def _row(chrom, pos, name="v", beta="0.1", pval="1e-10", se="0.01", n="35000"):
 
 
 class TestParseBulkUrls:
-    @pytest.fixture(scope="class")
-    def urls(self):
-        if not DECODE_URLS.exists():
-            pytest.fail("deCODE bulk_urls.txt not present")
-        return parse_bulk_urls(DECODE_URLS)
+    @pytest.fixture
+    def urls(self, tmp_path):
+        urls_file = tmp_path / "bulk_urls.txt"
+        urls_file.write_text(
+            "\n".join([
+                "https://example.test/download?file=10000_28_CRYBB2_CRBB2.txt.gz",
+                "https://example.test/download?file=10001_7_RAF1_c_Raf.txt.gz",
+                "https://example.test/download?file=assocvariants.annotated.txt.gz",
+                "https://example.test/download?file=10000_28_CRYBB2_CRBB2.txt.gz.md5sum",
+                "",
+            ])
+        )
+        return parse_bulk_urls(urls_file)
 
     def test_returns_list_of_tuples(self, urls):
         assert isinstance(urls, list)

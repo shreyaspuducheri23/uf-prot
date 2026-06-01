@@ -9,7 +9,6 @@ from unittest.mock import patch, MagicMock, call
 
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import OUTPUT_COLS
-from scripts.lib.decode_stream import parse_bulk_urls
 
 _decode_mod = importlib.import_module("scripts.02_cis_pqtl_extract.decode")
 read_decode_protein = _decode_mod.read_decode_protein
@@ -46,6 +45,36 @@ def _fake_df(n: int = 3, impmaf: str = "0.12") -> pd.DataFrame:
         for i in range(n)
     ]
     return pd.DataFrame(rows)
+
+
+class TestBuildProteinList:
+    def test_uses_protein_names_from_s3_key_index(self, tmp_path):
+        cohort = "deCODE_test"
+        cohort_path = tmp_path / cohort
+        cohort_path.mkdir()
+        (cohort_path / "_tss_hg38.tsv").write_text(
+            "gene\tchrom\ttss\tresolved_symbol\ttier\tsource\n"
+            "CRYBB2\t22\t25212564\tCRYBB2\t1\tcache\n"
+            "RAF1\t3\t12645699\tRAF1\t1\tcache\n"
+        )
+        protein_names = [
+            "10000_28_CRYBB2_CRBB2",
+            "10001_7_RAF1_c_Raf",
+            "malformed",
+        ]
+
+        with patch.object(_decode_mod, "COHORT", cohort), \
+             patch.object(_decode_mod, "cohort_dir", lambda c: tmp_path / c), \
+             patch.object(_decode_mod, "resolve_tss") as mock_resolve:
+            proteins = _decode_mod.build_protein_list(protein_names, build="hg38")
+
+        assert [p.seqid for p in proteins] == [
+            "10000_28_CRYBB2_CRBB2",
+            "10001_7_RAF1_c_Raf",
+        ]
+        assert [p.gene for p in proteins] == ["CRYBB2", "RAF1"]
+        assert [p.chrom for p in proteins] == ["22", "3"]
+        mock_resolve.assert_not_called()
 
 
 class TestReadDecodeProtein:
@@ -420,3 +449,32 @@ class TestStreamS3CisRowsRealData:
                 if found:
                     break
             assert found, f"{_S3_TEST_PROTEIN} not found in s3://{_S3_BUCKET}/{prefix}/"
+
+    def test_live_s3_key_index_builds_protein_list_without_bulk_urls(self, real_s3, tmp_path):
+        """Live integration for the production path: S3 index keys → ProteinMeta list."""
+        cohort = "deCODE_live_test"
+        cohort_path = tmp_path / cohort
+        cohort_path.mkdir()
+
+        with patch.object(_decode_mod, "COHORT", cohort), \
+             patch.object(_decode_mod, "cohort_dir", lambda c: tmp_path / c), \
+             patch.object(_decode_mod, "_get_s3_client", return_value=real_s3):
+            key_index = _decode_mod._build_s3_key_index(
+                "final_somascan_raw",
+                r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz",
+            )
+
+            genes = sorted({name.split("_")[2] for name in key_index if len(name.split("_")) >= 3})
+            (cohort_path / "_tss_hg38.tsv").write_text(
+                "gene\tchrom\ttss\tresolved_symbol\ttier\tsource\n"
+                + "".join(f"{gene}\t1\t1000000\t{gene}\t1\ttest\n" for gene in genes)
+            )
+
+            with patch.object(_decode_mod, "resolve_tss") as mock_resolve:
+                proteins = _decode_mod.build_protein_list(key_index.keys(), build="hg38")
+
+        assert _S3_TEST_PROTEIN in key_index
+        assert len(proteins) == len(key_index)
+        assert {p.seqid for p in proteins} == set(key_index)
+        assert next(p for p in proteins if p.seqid == _S3_TEST_PROTEIN).gene == "KCNAB2"
+        mock_resolve.assert_not_called()

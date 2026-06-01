@@ -1,7 +1,7 @@
-"""deCODE streaming helpers — HTTP bulk download and S3 direct streaming.
+"""deCODE streaming helpers — legacy HTTP download and S3 direct streaming.
 
-deCODE files are accessed via signed URLs from data/raw/deCODE/bulk_urls.txt
-(HTTP) or directly from s3-ext.decode.is:10443 (S3, preferred for throughput).
+deCODE files are accessed directly from s3-ext.decode.is:10443 in the pipeline.
+The HTTP helpers remain for legacy signed-URL fixtures and ad hoc checks.
 Callers decide concurrency; this module focuses on robust retried downloads.
 """
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import json
 import re
 import logging
 import time
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -28,11 +29,11 @@ from scripts.lib.config import (
     add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
 )
 from scripts.lib.decode_stream import (
-    _get_s3_client, stream_s3_cis_rows, parse_bulk_urls,
+    _get_s3_client, stream_s3_cis_rows,
     DECODE_S3_ENDPOINT, DECODE_S3_BUCKET, DECODE_S3_ACCESS_KEY, DECODE_S3_SECRET_KEY,
 )
 from scripts.lib.logging import setup_logger, RunManifest
-from scripts.lib.paths import DECODE_URLS, cohort_dir
+from scripts.lib.paths import cohort_dir
 from scripts.lib.progress import bar
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import RAW_CIS_WINDOW_KB, run_extraction
@@ -106,9 +107,9 @@ def _build_s3_key_index(prefix: str, pattern: str) -> dict[str, str]:
     return index
 
 
-def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[ProteinMeta]:
+def build_protein_list(protein_names: Iterable[str], build: str = BUILD) -> list[ProteinMeta]:
     """
-    Convert (protein_name, url) list to ProteinMeta objects.
+    Convert deCODE protein names to ProteinMeta objects.
     protein_name format: '<id>_<sub>_<gene>_<protein>' (e.g. '10000_28_CRYBB2_CRBB2').
     TSS fetched from Ensembl for the requested build (cached via @lru_cache).
     """
@@ -128,7 +129,7 @@ def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[
     new_cache_rows = []
     unresolved_rows = []
 
-    for protein_name, url in bar(urls, desc="Build deCODE protein list"):
+    for protein_name in bar(protein_names, desc="Build deCODE protein list"):
         parts = protein_name.split("_")
         if len(parts) < 3:
             continue
@@ -269,8 +270,7 @@ def main() -> None:
 
         _s3_key_map = _build_s3_key_index(norm_cfg["prefix"], norm_cfg["pattern"])
 
-        urls = parse_bulk_urls(DECODE_URLS)
-        proteins = build_protein_list(urls, build=build)
+        proteins = build_protein_list(_s3_key_map.keys(), build=build)
 
         log.info(f"{COHORT}: {len(proteins)} proteins")
 
