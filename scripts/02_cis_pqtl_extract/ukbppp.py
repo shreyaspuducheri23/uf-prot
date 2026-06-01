@@ -17,7 +17,7 @@ from typing import Callable
 
 import pandas as pd
 
-from scripts.lib.cis import tss_from_ensembl
+from scripts.lib.cis import _append_unresolved, _load_tss_cache, _save_tss_cache, resolve_tss
 from scripts.lib.config import (
     add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
 )
@@ -62,25 +62,32 @@ def build_protein_list(
     entity_map: dict[str, str] = {}
     proteins = []
 
-    tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
-    tss_cache: dict[str, tuple[str, int]] = {}
-    if tss_cache_path.exists():
-        df = pd.read_csv(tss_cache_path, sep="\t", dtype=str)
-        for _, row in df.iterrows():
-            try:
-                tss_cache[row["gene"]] = (row["chrom"], int(row["tss"]))
-            except (ValueError, KeyError):
-                pass
+    cohort_path = cohort_dir(COHORT)
+    tss_cache_path = cohort_path / "_tss_hg19.tsv"
+    tss_cache = _load_tss_cache(tss_cache_path)
 
     new_rows = []
+    unresolved_rows = []
     for entity_id, protein_name, gene in bar(manifest, desc="UKB-PPP TSS lookup"):
         if gene not in tss_cache:
-            result = tss_from_ensembl(gene, build)
-            if result:
-                tss_cache[gene] = result
-                new_rows.append({"gene": gene, "chrom": result[0], "tss": result[1]})
+            r = resolve_tss(gene, build)
+            if r.resolved:
+                tss_cache[gene] = (r.chrom, r.tss)
+                new_rows.append({
+                    "gene": gene,
+                    "chrom": r.chrom,
+                    "tss": r.tss,
+                    "resolved_symbol": r.resolved_symbol,
+                    "tier": r.tier,
+                    "source": r.source,
+                })
             else:
                 log.debug(f"TSS not found for UKB-PPP gene {gene}")
+                unresolved_rows.append({
+                    "gene": gene,
+                    "build": r.build,
+                    "attempts": "|".join(r.attempts),
+                })
                 continue
 
         chrom, tss = tss_cache[gene]
@@ -92,9 +99,8 @@ def build_protein_list(
         entity_map[protein_name] = entity_id
 
     if new_rows:
-        existing = pd.read_csv(tss_cache_path, sep="\t") if tss_cache_path.exists() else pd.DataFrame()
-        updated = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True)
-        updated.drop_duplicates("gene").to_csv(tss_cache_path, sep="\t", index=False)
+        _save_tss_cache(tss_cache_path, tss_cache, new_rows)
+    _append_unresolved(cohort_path, unresolved_rows)
 
     return proteins, entity_map
 

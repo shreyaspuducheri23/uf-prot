@@ -16,12 +16,17 @@ Usage:
 import argparse
 import logging
 import tarfile
-from pathlib import Path
 
 import pandas as pd
 
 from scripts.lib.checkpoint import Checkpoint
-from scripts.lib.cis import cis_window_bounds, tss_from_ensembl
+from scripts.lib.cis import (
+    _append_unresolved,
+    _load_tss_cache,
+    _save_tss_cache,
+    cis_window_bounds,
+    resolve_tss,
+)
 from scripts.lib.config import add_config_arg, load_config, get_section, get_cohort_build
 from scripts.lib.logging import setup_logger, RunManifest
 from scripts.lib.paths import UKB_FEMALE_DIR, UKB_FEMALE_CIS_RAW, cohort_dir
@@ -36,30 +41,6 @@ BUILD = "hg19"
 _MEMBER_SUFFIX = "/output/summ_female2.assoc.txt.gz"
 
 
-def _load_tss_cache(cache_path: Path) -> dict[str, tuple[str, int]]:
-    """Load TSS cache from disk; returns {gene_upper: (chrom, tss)}."""
-    if not cache_path.exists():
-        return {}
-    try:
-        df = pd.read_csv(cache_path, sep="\t", dtype=str)
-        result: dict[str, tuple[str, int]] = {}
-        for _, row in df.iterrows():
-            try:
-                result[row["gene"].upper()] = (row["chrom"], int(row["tss"]))
-            except (ValueError, KeyError):
-                pass
-        return result
-    except Exception as exc:
-        log.warning(f"TSS cache read error ({cache_path}): {exc}")
-        return {}
-
-
-def _save_tss_cache(cache_path: Path, cache: dict[str, tuple[str, int]]) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [{"gene": g, "chrom": c, "tss": t} for g, (c, t) in sorted(cache.items())]
-    pd.DataFrame(rows).to_csv(cache_path, sep="\t", index=False)
-
-
 def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
     """
     Main unpack loop.  Returns count of genes successfully written.
@@ -69,7 +50,7 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
 
     cp = Checkpoint(cohort_dir(COHORT) / f"_state_02_unpack_{window_kb}kb.json")
     tss_cache_path = cohort_dir(COHORT) / "_tss_hg19.tsv"
-    tss_cache = _load_tss_cache(tss_cache_path)
+    tss_cache = _load_tss_cache(tss_cache_path, uppercase=True)
 
     tars = sorted(UKB_FEMALE_DIR.glob("ProteoNexus_pQTL_protein_*.tar"))
     if not tars:
@@ -82,7 +63,8 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
     n_skip_tss = 0
     n_done_already = 0
     tss_cache_dirty = False
-    genes_processed: list[str] = []
+    new_tss_rows: list[dict] = []
+    unresolved_rows: list[dict] = []
 
     for tar_path in bar(tars, desc="ProteoNexus tars"):
         if limit is not None and n_ok >= limit:
@@ -109,13 +91,26 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
 
                     # TSS lookup (cached)
                     if gene not in tss_cache:
-                        result = tss_from_ensembl(gene, build)
-                        if result is None:
+                        r = resolve_tss(gene, build)
+                        if not r.resolved:
                             log.warning(f"TSS not found for {gene} — skipping")
                             n_skip_tss += 1
-                            cp.mark_done(gene)  # mark so we don't retry on every run
+                            cp.mark_failed(gene, "no TSS")
+                            unresolved_rows.append({
+                                "gene": gene,
+                                "build": r.build,
+                                "attempts": "|".join(r.attempts),
+                            })
                             continue
-                        tss_cache[gene] = result
+                        tss_cache[gene] = (r.chrom, r.tss)
+                        new_tss_rows.append({
+                            "gene": gene,
+                            "chrom": r.chrom,
+                            "tss": r.tss,
+                            "resolved_symbol": r.resolved_symbol,
+                            "tier": r.tier,
+                            "source": r.source,
+                        })
                         tss_cache_dirty = True
 
                     chrom, tss = tss_cache[gene]
@@ -158,7 +153,6 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
                     cis_df.to_csv(out_path, sep="\t", index=False)
                     cp.mark_done(gene)
                     n_ok += 1
-                    genes_processed.append(gene)
                     log.debug(f"{gene}: {len(cis_df)} cis rows → {out_path.name}")
 
         except tarfile.TarError as exc:
@@ -167,12 +161,18 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
 
         # Flush TSS cache after each tar so progress is saved incrementally
         if tss_cache_dirty:
-            _save_tss_cache(tss_cache_path, tss_cache)
+            _save_tss_cache(tss_cache_path, tss_cache, new_tss_rows)
+            new_tss_rows.clear()
             tss_cache_dirty = False
+        if unresolved_rows:
+            _append_unresolved(cohort_dir(COHORT), unresolved_rows)
+            unresolved_rows.clear()
 
     # Final cache flush
     if tss_cache_dirty:
-        _save_tss_cache(tss_cache_path, tss_cache)
+        _save_tss_cache(tss_cache_path, tss_cache, new_tss_rows)
+    if unresolved_rows:
+        _append_unresolved(cohort_dir(COHORT), unresolved_rows)
 
     log.info(
         f"Unpack complete: {n_ok} genes written | "

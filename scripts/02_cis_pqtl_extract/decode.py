@@ -23,7 +23,7 @@ import time
 
 import pandas as pd
 
-from scripts.lib.cis import tss_from_ensembl
+from scripts.lib.cis import _append_unresolved, _load_tss_cache, _save_tss_cache, resolve_tss
 from scripts.lib.config import (
     add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
 )
@@ -112,7 +112,8 @@ def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[
     protein_name format: '<id>_<sub>_<gene>_<protein>' (e.g. '10000_28_CRYBB2_CRBB2').
     TSS fetched from Ensembl for the requested build (cached via @lru_cache).
     """
-    tss_cache_path = cohort_dir(COHORT) / "_tss_hg38.tsv"
+    cohort_path = cohort_dir(COHORT)
+    tss_cache_path = cohort_path / "_tss_hg38.tsv"
     # All deCODE cohorts use identical genes; share the raw-cohort TSS cache when
     # the cohort-specific file doesn't exist yet (avoids ~20 min Ensembl re-lookup).
     _tss_seed = cohort_dir("deCODE") / "_tss_hg38.tsv"
@@ -121,17 +122,11 @@ def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[
         tss_cache_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(_tss_seed, tss_cache_path)
         log.info(f"Seeded TSS cache from deCODE → {tss_cache_path}")
-    tss_cache: dict[str, tuple[str, int]] = {}
-    if tss_cache_path.exists():
-        df = pd.read_csv(tss_cache_path, sep="\t", dtype=str)
-        for row in df.itertuples(index=False):
-            try:
-                tss_cache[str(row.gene)] = (str(row.chrom), int(row.tss))
-            except (ValueError, KeyError):
-                pass
+    tss_cache = _load_tss_cache(tss_cache_path)
 
     proteins = []
     new_cache_rows = []
+    unresolved_rows = []
 
     for protein_name, url in bar(urls, desc="Build deCODE protein list"):
         parts = protein_name.split("_")
@@ -141,12 +136,24 @@ def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[
         seqid = protein_name
 
         if gene not in tss_cache:
-            result = tss_from_ensembl(gene, build)
-            if result:
-                tss_cache[gene] = result
-                new_cache_rows.append({"gene": gene, "chrom": result[0], "tss": result[1]})
+            r = resolve_tss(gene, build)
+            if r.resolved:
+                tss_cache[gene] = (r.chrom, r.tss)
+                new_cache_rows.append({
+                    "gene": gene,
+                    "chrom": r.chrom,
+                    "tss": r.tss,
+                    "resolved_symbol": r.resolved_symbol,
+                    "tier": r.tier,
+                    "source": r.source,
+                })
             else:
                 log.debug(f"TSS not found for {gene}")
+                unresolved_rows.append({
+                    "gene": gene,
+                    "build": r.build,
+                    "attempts": "|".join(r.attempts),
+                })
                 continue
 
         chrom, tss = tss_cache[gene]
@@ -156,9 +163,8 @@ def build_protein_list(urls: list[tuple[str, str]], build: str = BUILD) -> list[
         ))
 
     if new_cache_rows:
-        existing = pd.read_csv(tss_cache_path, sep="\t") if tss_cache_path.exists() else pd.DataFrame()
-        updated = pd.concat([existing, pd.DataFrame(new_cache_rows)], ignore_index=True)
-        updated.drop_duplicates("gene").to_csv(tss_cache_path, sep="\t", index=False)
+        _save_tss_cache(tss_cache_path, tss_cache, new_cache_rows)
+    _append_unresolved(cohort_path, unresolved_rows)
 
     return proteins
 

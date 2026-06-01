@@ -1,0 +1,3 @@
+gene_symbol	build	chrom	tss	source
+ALPPL2	hg38	2	232378751	MR_IA/04a_extract_cis_region.py:169; NCBI Gene 250/ALPP primary assembly, plus strand, tss=start
+HLA-DRB3	hg38	6	32480463	MR_IA/04a_extract_cis_region.py:170; MHC reference haplotype projection, minus strand, tss=end

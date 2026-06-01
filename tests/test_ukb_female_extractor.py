@@ -19,6 +19,9 @@ from unittest import mock
 import pandas as pd
 import pytest
 
+from scripts.lib.checkpoint import Checkpoint
+from scripts.lib.cis import TssResolution
+
 # Use importlib because directory names starting with digits aren't valid Python identifiers
 _ukb_mod = importlib.import_module("scripts.02_cis_pqtl_extract.ukb_female")
 _unpack_mod = importlib.import_module("scripts.02_cis_pqtl_extract.protonexus_unpack")
@@ -280,6 +283,49 @@ class TestProtonexusUnpack:
         result = pd.read_csv(cis_raw_dir / f"{gene}.tsv", sep="\t")
         assert result["rs"].tolist() == ["rs_new_window"]
         assert (cohort_base / "_state_02_unpack_1000kb.json").exists()
+
+    def test_failed_no_tss_gene_retries_and_can_complete(self, tmp_path):
+        gene = "MYGENE"
+        tss = 2_000_000
+        window_kb = 500
+        rows = [
+            {"chr": "1", "rs": "rs_retry", "ps": tss,
+             "n_mis": 0, "n_obs": 17988, "allele1": "A", "allele0": "G",
+             "af": 0.3, "beta": 0.05, "se": 0.01, "p_wald": 1e-10,
+             "pip_susie": 0.9, "fwer": 0.001},
+        ]
+        _make_tar_with_gene(tmp_path, gene, rows)
+
+        cis_raw_dir = tmp_path / "cis_raw"
+        cis_raw_dir.mkdir()
+        cohort_base = tmp_path / "cohort"
+        cohort_base.mkdir()
+        checkpoint_path = cohort_base / f"_state_02_unpack_{window_kb}kb.json"
+        Checkpoint(checkpoint_path).mark_failed(gene, "no TSS")
+
+        resolved = TssResolution(
+            resolved=True,
+            requested_symbol=gene,
+            build="hg19",
+            chrom="1",
+            tss=tss,
+            resolved_symbol=gene,
+            tier=1,
+            source="test",
+            attempts=(gene,),
+        )
+
+        with (
+            mock.patch.object(_unpack_mod, "UKB_FEMALE_DIR", tmp_path),
+            mock.patch.object(_unpack_mod, "UKB_FEMALE_CIS_RAW", cis_raw_dir),
+            mock.patch.object(_unpack_mod, "cohort_dir", return_value=cohort_base),
+            mock.patch.object(_unpack_mod, "resolve_tss", return_value=resolved),
+        ):
+            n = run_unpack(limit=1, window_kb=window_kb)
+
+        assert n == 1
+        assert (cis_raw_dir / f"{gene}.tsv").exists()
+        assert Checkpoint(checkpoint_path).is_done(gene)
 
 
 # ---------------------------------------------------------------------------
