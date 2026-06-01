@@ -125,7 +125,6 @@ queue_step() {
   fi
 
   local slog="$LOG_DIR/step_${step}_${TIMESTAMP}.log"
-  log "QUEUE step $step ($desc) → $slog"
   (
     local t0=$SECONDS
     if "${cmd[@]}" >"$slog" 2>&1; then
@@ -136,7 +135,9 @@ queue_step() {
       exit 1
     fi
   ) &
-  echo "$!"   > "$_PAR_DIR/pid_${step}"
+  local pid="$!"
+  log "QUEUE step $step ($desc) pid=$pid → $slog"
+  echo "$pid" > "$_PAR_DIR/pid_${step}"
   echo "$slog" > "$_PAR_DIR/log_${step}"
   echo "$desc" > "$_PAR_DIR/desc_${step}"
 }
@@ -152,8 +153,9 @@ flush_parallel() {
   for pid_file in "$_PAR_DIR"/pid_*; do
     [[ -f "$pid_file" ]] || continue
     step="${pid_file##*/pid_}"
+    pid=$(cat "$pid_file")
     desc=$(cat "$_PAR_DIR/desc_${step}")
-    running="$running $step($desc)"
+    running="$running $step(pid=$pid,$desc)"
     total=$((total + 1))
   done
   if [[ $total -eq 0 ]]; then return 0; fi
