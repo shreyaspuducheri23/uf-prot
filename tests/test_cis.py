@@ -3,8 +3,10 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
+import requests
 
 from scripts.lib.cis import (
+    _ensembl_lookup,
     _load_tss_cache,
     _save_tss_cache,
     cis_window_bounds,
@@ -70,13 +72,18 @@ class TestLoadAricTss:
 
 
 class MockResponse:
-    def __init__(self, payload=None, status_ok=True):
+    def __init__(self, payload=None, status_code=200, status_ok=None):
         self.payload = payload or {}
-        self.status_ok = status_ok
+        if status_ok is not None:
+            status_code = 200 if status_ok else 404
+        self.status_code = status_code
 
     def raise_for_status(self):
-        if not self.status_ok:
-            raise RuntimeError("404")
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(
+                f"{self.status_code} error",
+                response=self,
+            )
 
     def json(self):
         return self.payload
@@ -110,13 +117,42 @@ class TestResolveTss:
 
             symbol = url.split("/lookup/symbol/homo_sapiens/")[1].split("?")[0]
             if symbol not in ensembl:
-                return MockResponse(status_ok=False)
+                return MockResponse(status_code=404)
             payload = ensembl[symbol]
             if payload is None:
-                return MockResponse(status_ok=False)
+                return MockResponse(status_code=404)
             return MockResponse(payload)
 
         return side_effect
+
+    def test_ensembl_retries_transient_503_then_succeeds(self):
+        responses = [
+            MockResponse(status_code=503),
+            MockResponse(status_code=503),
+            MockResponse(self._ensembl_payload(1)),
+        ]
+
+        def fake_get(url, headers=None, timeout=None):
+            return responses.pop(0)
+
+        with patch("scripts.lib.cis.requests.get", side_effect=fake_get) as mock_get, \
+             patch("scripts.lib.cis.time.sleep") as mock_sleep:
+            result = _ensembl_lookup("PCSK1", "hg38")
+
+        assert result == ("22", 1000)
+        assert mock_get.call_count == 3
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [1, 2]
+
+    def test_resolve_tss_marks_timeout_as_transient(self):
+        with patch(
+            "scripts.lib.cis.requests.get",
+            side_effect=requests.exceptions.Timeout("slow"),
+        ), patch("scripts.lib.cis.time.sleep"):
+            result = resolve_tss("PCSK1", "hg38")
+
+        assert not result.resolved
+        assert result.transient
+        assert result.attempts == ("PCSK1",)
 
     def test_tier_1_strand_plus_1_uses_start(self):
         with patch("scripts.lib.cis.requests.get",
@@ -140,12 +176,11 @@ class TestResolveTss:
         assert result.resolved
         assert result.tss == 1000
 
-    def test_tier_1_bad_strand_falls_through_unresolved(self):
+    def test_tier_1_bad_strand_raises(self):
         with patch("scripts.lib.cis.requests.get",
                    side_effect=self._mock_get({"BAD": self._ensembl_payload(0)})):
-            result = resolve_tss("BAD", "hg38")
-        assert not result.resolved
-        assert result.tier == 0
+            with pytest.raises(ValueError, match="unexpected strand"):
+                resolve_tss("BAD", "hg38")
 
     def test_tier_2_prev_symbol_rescue(self):
         with patch(
@@ -212,6 +247,7 @@ class TestResolveTss:
         assert not result.resolved
         assert result.tier == 0
         assert result.attempts == ("MISSING",)
+        assert not result.transient
 
     def test_override_hg38(self):
         with patch("scripts.lib.cis.requests.get", side_effect=self._mock_get()):

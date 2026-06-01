@@ -1,6 +1,7 @@
 """cis-window and TSS lookup helpers."""
 import dataclasses
 import logging
+import time
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -19,6 +20,10 @@ _TSS_CACHE_COLUMNS = ["gene", "chrom", "tss", "resolved_symbol", "tier", "source
 _UNRESOLVED_COLUMNS = ["gene", "build", "attempts"]
 
 
+class _TransientError(Exception):
+    """Raised when a REST lookup exhausted retries on transient errors."""
+
+
 @dataclasses.dataclass(frozen=True)
 class TssResolution:
     resolved: bool
@@ -30,64 +35,88 @@ class TssResolution:
     tier: int = 0
     source: str = ""
     attempts: tuple[str, ...] = ()
+    transient: bool = False
 
 
 def _ensembl_lookup(gene_symbol: str, build: str) -> tuple[str, int] | None:
-    """Fetch (chrom, TSS) from Ensembl REST, returning None on any miss."""
+    """Fetch (chrom, TSS) from Ensembl REST, retrying transient failures."""
     base = _ENSEMBL_HG19_REST if build == "hg19" else _ENSEMBL_HG38_REST
     url = f"{base}/lookup/symbol/homo_sapiens/{gene_symbol}?expand=0"
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        chrom = str(data["seq_region_name"])
-        strand = data["strand"]
-        start = int(data["start"])
-        end = int(data["end"])
-        # Normalise strand to +1 / -1; API returns int 1/-1 or string "+"/"-"
-        if strand in (1, "+", "1"):
-            tss = start
-        elif strand in (-1, "-", "-1"):
-            tss = end
-        else:
-            raise ValueError(
-                f"Ensembl returned unexpected strand {strand!r} for {gene_symbol!r}; "
-                f"expected 1 or -1"
-            )
-        return chrom, tss
-    except Exception as exc:
-        log.debug(f"Ensembl TSS lookup failed for {gene_symbol!r} ({build}): {exc}")
-        return None
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=15)
+            if resp.status_code in (400, 404):
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            chrom = str(data["seq_region_name"])
+            strand = data["strand"]
+            start = int(data["start"])
+            end = int(data["end"])
+            if strand in (1, "+", "1"):
+                return chrom, start
+            if strand in (-1, "-", "-1"):
+                return chrom, end
+            raise ValueError(f"unexpected strand {strand!r} for {gene_symbol!r}")
+        except ValueError:
+            raise
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status in (400, 404):
+                return None
+            last_exc = exc
+        except Exception as exc:
+            last_exc = exc
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    raise _TransientError(
+        f"Ensembl lookup for {gene_symbol!r} ({build}) failed after 3 attempts: {last_exc}"
+    )
 
 
 def _hgnc_approved_for_field(field: str, gene_symbol: str) -> list[str]:
     """Return approved HGNC symbols matching a prev_symbol or alias_symbol search."""
     url = f"https://rest.genenames.org/search/{field}/{quote(gene_symbol, safe='')}"
-    try:
-        resp = requests.get(url, headers=_HGNC_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        docs = data.get("response", {}).get("docs", [])
-        return [str(doc["symbol"]) for doc in docs if doc.get("symbol")]
-    except Exception as exc:
-        log.debug(f"HGNC lookup failed for {field}={gene_symbol!r}: {exc}")
-        return []
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=_HGNC_HEADERS, timeout=10)
+            if resp.status_code in (400, 404):
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+            docs = data.get("response", {}).get("docs", [])
+            return [str(doc["symbol"]) for doc in docs if doc.get("symbol")]
+        except Exception as exc:
+            last_exc = exc
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    log.debug(f"HGNC lookup failed for {field}={gene_symbol!r}: {last_exc}")
+    return []
 
 
 def _hgnc_doc_for_symbol(gene_symbol: str) -> dict:
     """Return the HGNC document for an approved symbol, or {} on a miss."""
     url = f"https://rest.genenames.org/fetch/symbol/{quote(gene_symbol, safe='')}"
-    try:
-        resp = requests.get(url, headers=_HGNC_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        docs = data.get("response", {}).get("docs", [])
-        if not docs:
-            return {}
-        return docs[0]
-    except Exception as exc:
-        log.debug(f"HGNC fetch failed for symbol={gene_symbol!r}: {exc}")
-        return {}
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=_HGNC_HEADERS, timeout=10)
+            if resp.status_code in (400, 404):
+                return {}
+            resp.raise_for_status()
+            data = resp.json()
+            docs = data.get("response", {}).get("docs", [])
+            if not docs:
+                return {}
+            return docs[0]
+        except Exception as exc:
+            last_exc = exc
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    log.debug(f"HGNC fetch failed for symbol={gene_symbol!r}: {last_exc}")
+    return {}
 
 
 @lru_cache(maxsize=1)
@@ -126,11 +155,18 @@ def resolve_tss(gene_symbol: str, build: str) -> TssResolution:
     build = str(build).lower()
     attempts: list[str] = []
     tried: set[str] = set()
+    any_transient = False
 
     def try_ensembl(candidate: str) -> tuple[str, int] | None:
+        nonlocal any_transient
         attempts.append(candidate)
         tried.add(candidate)
-        return _ensembl_lookup(candidate, build)
+        try:
+            return _ensembl_lookup(candidate, build)
+        except _TransientError as exc:
+            any_transient = True
+            log.debug(str(exc))
+            return None
 
     def resolved(
         candidate: str,
@@ -210,6 +246,7 @@ def resolve_tss(gene_symbol: str, build: str) -> TssResolution:
         requested_symbol=requested,
         build=build,
         attempts=tuple(attempts),
+        transient=any_transient,
     )
 
 

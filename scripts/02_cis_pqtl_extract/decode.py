@@ -25,6 +25,7 @@ from collections.abc import Iterable
 import pandas as pd
 
 from scripts.lib.cis import _append_unresolved, _load_tss_cache, _save_tss_cache, resolve_tss
+from scripts.lib.somascan import load_seqid_map
 from scripts.lib.config import (
     add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
 )
@@ -125,6 +126,7 @@ def build_protein_list(protein_names: Iterable[str], build: str = BUILD) -> list
         log.info(f"Seeded TSS cache from deCODE → {tss_cache_path}")
     tss_cache = _load_tss_cache(tss_cache_path)
 
+    seqid_map = load_seqid_map()
     proteins = []
     new_cache_rows = []
     unresolved_rows = []
@@ -133,7 +135,8 @@ def build_protein_list(protein_names: Iterable[str], build: str = BUILD) -> list
         parts = protein_name.split("_")
         if len(parts) < 3:
             continue
-        gene = parts[2]
+        seqid_key = f"{parts[0]}_{parts[1]}"
+        gene = seqid_map.get(seqid_key, parts[2])
         seqid = protein_name
 
         if gene not in tss_cache:
@@ -149,12 +152,15 @@ def build_protein_list(protein_names: Iterable[str], build: str = BUILD) -> list
                     "source": r.source,
                 })
             else:
-                log.debug(f"TSS not found for {gene}")
-                unresolved_rows.append({
-                    "gene": gene,
-                    "build": r.build,
-                    "attempts": "|".join(r.attempts),
-                })
+                if r.transient:
+                    log.warning(f"Transient TSS lookup failure for {gene!r}; will retry next run")
+                else:
+                    log.debug(f"TSS not found for {gene}")
+                    unresolved_rows.append({
+                        "gene": gene,
+                        "build": r.build,
+                        "attempts": "|".join(r.attempts),
+                    })
                 continue
 
         chrom, tss = tss_cache[gene]

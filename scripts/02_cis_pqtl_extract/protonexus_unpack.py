@@ -93,14 +93,19 @@ def run_unpack(limit: int | None, window_kb: int, build: str = BUILD) -> int:
                     if gene not in tss_cache:
                         r = resolve_tss(gene, build)
                         if not r.resolved:
-                            log.warning(f"TSS not found for {gene} — skipping")
+                            if r.transient:
+                                log.warning(
+                                    f"Transient TSS lookup failure for {gene!r}; will retry next run"
+                                )
+                            else:
+                                log.warning(f"TSS not found for {gene}; skipping")
+                                unresolved_rows.append({
+                                    "gene": gene,
+                                    "build": r.build,
+                                    "attempts": "|".join(r.attempts),
+                                })
                             n_skip_tss += 1
                             cp.mark_failed(gene, "no TSS")
-                            unresolved_rows.append({
-                                "gene": gene,
-                                "build": r.build,
-                                "attempts": "|".join(r.attempts),
-                            })
                             continue
                         tss_cache[gene] = (r.chrom, r.tss)
                         new_tss_rows.append({

@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.lib.cis import _append_unresolved, _load_tss_cache, _save_tss_cache, resolve_tss
+from scripts.lib.somascan import load_seqid_map, parse_fenland_seqid
 from scripts.lib.config import (
     add_config_arg, load_config, get_section, get_cohort_build, get_cohort_sample_size
 )
@@ -36,14 +37,19 @@ FENLAND_N = 10_708
 
 def load_fenland_manifest() -> dict[str, list[tuple[str, str]]]:
     """
-    Return {protein_name: [(entity_id, filename), ...]} — typically 2 files per protein.
+    Return {gene_symbol: [(entity_id, filename), ...]} — typically 2 files per protein.
+    Gene symbols are resolved from SomaScan SeqId via the shared analyte menu; the
+    display-name prefix is used only when SeqId parsing or menu lookup fails.
     """
+    seqid_map = load_seqid_map()
     entities = list_folder(SYNAPSE_FOLDER)
     protein_files: dict[str, list[tuple[str, str]]] = {}
     for e in entities:
-        name = e["name"]  # e.g. 'PROTEIN.txt.gz' or 'PROTEIN_2.txt.gz'
-        base = name.split("_")[0].removesuffix(".txt.gz")
-        protein_files.setdefault(base, []).append((e["id"], name))
+        name = e["name"]
+        seqid_key = parse_fenland_seqid(name)
+        gene = seqid_map.get(seqid_key, name.split("_")[0].removesuffix(".txt.gz")) \
+            if seqid_key else name.split("_")[0].removesuffix(".txt.gz")
+        protein_files.setdefault(gene, []).append((e["id"], name))
     log.info(f"Fenland: {len(protein_files)} proteins ({len(entities)} files)")
     return protein_files
 
@@ -72,12 +78,15 @@ def build_protein_list(protein_files: dict, build: str = BUILD) -> tuple[list[Pr
                     "source": r.source,
                 })
             else:
-                log.debug(f"TSS not found for Fenland gene {gene}")
-                unresolved_rows.append({
-                    "gene": gene,
-                    "build": r.build,
-                    "attempts": "|".join(r.attempts),
-                })
+                if r.transient:
+                    log.warning(f"Transient TSS lookup failure for {gene!r}; will retry next run")
+                else:
+                    log.debug(f"TSS not found for Fenland gene {gene}")
+                    unresolved_rows.append({
+                        "gene": gene,
+                        "build": r.build,
+                        "attempts": "|".join(r.attempts),
+                    })
                 continue
 
         chrom, tss = tss_cache[gene]

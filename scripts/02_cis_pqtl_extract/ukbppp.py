@@ -82,12 +82,15 @@ def build_protein_list(
                     "source": r.source,
                 })
             else:
-                log.debug(f"TSS not found for UKB-PPP gene {gene}")
-                unresolved_rows.append({
-                    "gene": gene,
-                    "build": r.build,
-                    "attempts": "|".join(r.attempts),
-                })
+                if r.transient:
+                    log.warning(f"Transient TSS lookup failure for {gene!r}; will retry next run")
+                else:
+                    log.debug(f"TSS not found for UKB-PPP gene {gene}")
+                    unresolved_rows.append({
+                        "gene": gene,
+                        "build": r.build,
+                        "attempts": "|".join(r.attempts),
+                    })
                 continue
 
         chrom, tss = tss_cache[gene]

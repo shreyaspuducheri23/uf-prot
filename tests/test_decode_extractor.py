@@ -7,6 +7,7 @@ import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock, call
 
+from scripts.lib.cis import TssResolution
 from scripts.lib.schema import ProteinMeta
 from scripts.lib.cis_extract import OUTPUT_COLS
 
@@ -75,6 +76,51 @@ class TestBuildProteinList:
         assert [p.gene for p in proteins] == ["CRYBB2", "RAF1"]
         assert [p.chrom for p in proteins] == ["22", "3"]
         mock_resolve.assert_not_called()
+
+    def test_transient_tss_failure_is_not_written_to_unresolved_sidecar(self, tmp_path):
+        cohort = "deCODE_test"
+        cohort_path = tmp_path / cohort
+        transient = TssResolution(
+            resolved=False,
+            requested_symbol="PCSK1",
+            build="hg38",
+            attempts=("PCSK1",),
+            transient=True,
+        )
+
+        with patch.object(_decode_mod, "COHORT", cohort), \
+             patch.object(_decode_mod, "cohort_dir", lambda c: tmp_path / c), \
+             patch.object(_decode_mod, "load_seqid_map", return_value={}), \
+             patch.object(_decode_mod, "resolve_tss", return_value=transient):
+            proteins = _decode_mod.build_protein_list(["100_1_PCSK1_PC1"], build="hg38")
+
+        assert proteins == []
+        assert not (cohort_path / "_tss_unresolved.tsv").exists()
+
+    def test_genuine_tss_miss_is_written_to_unresolved_sidecar(self, tmp_path):
+        cohort = "deCODE_test"
+        cohort_path = tmp_path / cohort
+        miss = TssResolution(
+            resolved=False,
+            requested_symbol="MISSING",
+            build="hg38",
+            attempts=("MISSING",),
+            transient=False,
+        )
+
+        with patch.object(_decode_mod, "COHORT", cohort), \
+             patch.object(_decode_mod, "cohort_dir", lambda c: tmp_path / c), \
+             patch.object(_decode_mod, "load_seqid_map", return_value={}), \
+             patch.object(_decode_mod, "resolve_tss", return_value=miss):
+            proteins = _decode_mod.build_protein_list(["100_1_MISSING_PC1"], build="hg38")
+
+        assert proteins == []
+        out = pd.read_csv(cohort_path / "_tss_unresolved.tsv", sep="\t")
+        assert out.to_dict("records") == [{
+            "gene": "MISSING",
+            "build": "hg38",
+            "attempts": "MISSING",
+        }]
 
 
 class TestReadDecodeProtein:
@@ -464,7 +510,12 @@ class TestStreamS3CisRowsRealData:
                 r"Proteomics_PC0_(.+)_\d{8}\.txt\.gz",
             )
 
-            genes = sorted({name.split("_")[2] for name in key_index if len(name.split("_")) >= 3})
+            seqid_map = _decode_mod.load_seqid_map()
+            genes = sorted({
+                seqid_map.get(f"{parts[0]}_{parts[1]}", parts[2])
+                for name in key_index
+                if len(parts := name.split("_")) >= 3
+            })
             (cohort_path / "_tss_hg38.tsv").write_text(
                 "gene\tchrom\ttss\tresolved_symbol\ttier\tsource\n"
                 + "".join(f"{gene}\t1\t1000000\t{gene}\t1\ttest\n" for gene in genes)
