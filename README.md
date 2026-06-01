@@ -6,6 +6,7 @@ Two-sample MR using cis-pQTLs from...
 2. deCODE — SomaScan, 35K, Icelandic
 3. Fenland — SomaScan, 10K, European
 4. UKB-PPP — Olink, 34K, European
+5. UKB_female — Olink (ProteoNexus), 18K, British female
 
 ...as exposures against the largest available fibroid GWAS (Kim et al. 2025, GCST90461957, 74K cases / 466K controls) as the outcome. Followed by colocalization analysis to validate. 
 
@@ -31,8 +32,9 @@ First, we want to restrict analyses to the european-ancestry. This is for maximi
 | ARIC EA | SomaScan 7K  | ≈7K  | PLINK2 `.glm.linear`, one file per SeqId                            | `data/raw/ARIC/EA/` (4,657 proteins)  |
 | ARIC AA | SomaScan 7K  | ≈7K  | Same                                                                | `data/raw/ARIC/AA/` (4,657 proteins)  |
 | deCODE  | SomaScan 35K | ≈35K | Single compressed sentinel pQTL file                                | `data/raw/deCODE/`                    |
-| UKB-PPP | Olink 34K    | ≈34K | Synapse `syn51365303`; 2,940 `.tar` files × ≈547 MB = ≈1.6 TB total | Stream-only (see below)               |
-| Fenland | SomaScan 10K | ≈10K | Synapse `syn51824537`; ≈5K proteins, 2 files each                   | Stream-only (see below)               |
+| UKB-PPP    | Olink 3072   | ≈35K | Synapse `syn51365303`; 2,940 `.tar` files × ≈547 MB = ≈1.6 TB total | Stream-only (see below)               |
+| Fenland    | SomaScan 7K  | ≈11K | Synapse `syn51824537`; ≈5K proteins, 2 files each                   | Stream-only (see below)               |
+| UKB_female | Olink 3072   | ≈18K | 26 alphabetical tar archives; GEMMA `.assoc.txt.gz` per gene, 2,919 proteins | `/Volumes/Extreme SSD/ProteoNexus/` (local SSD) |
 
 
 `data/raw/ARIC/seqid.txt` maps SeqId → UniProt → gene symbol → chromosome → TSS (GRCh38).
@@ -44,6 +46,10 @@ First, we want to restrict analyses to the european-ancestry. This is for maximi
 ### Synapse streaming
 
 UKB-PPP and Fenland cannot be downloaded in full (≈1.6 TB+ each; local disk insufficient). Use the streaming approach from MR_IA: download one file at a time, extract the relevant cis-region in memory, save matched rows, delete. Peak disk ≈550 MB per worker. Synapse credentials are read from `~/.synapseConfig`. Install client with `uv pip install synapseclient`.
+
+### ProteoNexus (UKB_female)
+
+UKB_female summary statistics are stored as 26 alphabetical tar archives on a local external SSD at `/Volumes/Extreme SSD/ProteoNexus/` (configurable via `LEIO_UKB_FEMALE_DIR`). Each tar contains per-gene GEMMA-format `.assoc.txt.gz` files. Extraction is a two-phase process: `protonexus_unpack.py` iterates the tars sequentially, filters each gene to its ±1 Mb cis window, and writes plain TSVs to `processed_data/UKB_female/cis_raw_1000kb/`; then `ukb_female.py` applies the standard filter pipeline (p < 5×10⁻⁸, MAF, MHC, palindromes) identically to the other cohorts.
 
 ## Methods
 
@@ -92,6 +98,8 @@ bash scripts/00_setup/install.sh
 
 # Smoke-test on ARIC EA (local, fast) end-to-end before running full pipeline
 uv run python scripts/02_cis_pqtl_extract/aric.py --limit 10
+uv run python scripts/02_cis_pqtl_extract/protonexus_unpack.py --limit 10  # UKB_female phase 1
+uv run python scripts/02_cis_pqtl_extract/ukb_female.py --limit 10          # UKB_female phase 2
 uv run python scripts/03_clump/clump.py --cohort ARIC_EA --limit 10
 uv run python scripts/04_liftover/instruments_to_hg38.py --cohort ARIC_EA --limit 10
 uv run python scripts/05_harmonise/harmonise.py --cohort ARIC_EA --limit 10
@@ -108,9 +116,11 @@ uv run python scripts/01_outcome_prep/prep_kim.py
 
 # 2. Extract cis-pQTLs (±500 kb of TSS, p < 5×10⁻⁸, MAF > 1%, no MHC)
 uv run python scripts/02_cis_pqtl_extract/aric.py
-uv run python scripts/02_cis_pqtl_extract/decode.py          # HTTP, sequential
-uv run python scripts/02_cis_pqtl_extract/ukbppp.py --workers 4   # Synapse streaming
-uv run python scripts/02_cis_pqtl_extract/fenland.py              # Synapse streaming
+uv run python scripts/02_cis_pqtl_extract/decode.py                  # HTTP, sequential
+uv run python scripts/02_cis_pqtl_extract/ukbppp.py --workers 4      # Synapse streaming
+uv run python scripts/02_cis_pqtl_extract/fenland.py                 # Synapse streaming
+uv run python scripts/02_cis_pqtl_extract/protonexus_unpack.py       # UKB_female phase 1: tars → cis_raw_1000kb/
+uv run python scripts/02_cis_pqtl_extract/ukb_female.py --workers 4  # UKB_female phase 2: filter
 
 # 3. LD clumping (1 Mb window, r² < 0.001, p < 5×10⁻⁸) vs 1000G EUR
 uv run python scripts/03_clump/clump.py --cohort all
@@ -138,6 +148,9 @@ uv run python scripts/09_assemble/assemble.py
 # 9b. Build UKB_female-primary cross-cohort gene summary
 uv run python scripts/09_assemble/cross_cohort.py
 
+# QC. Stage-aware yield report (run after any step to audit protein/locus yield)
+uv run python scripts/qc/yield_report.py --cohort all
+
 # 10. Generate presentation figures
 uv run python scripts/10_present/forest_plot.py
 uv run python scripts/10_present/volcano_plot.py
@@ -155,6 +168,7 @@ Each cohort's extraction and clumping operate in the cohort's native build. Step
 | deCODE          | GRCh38  | pass-through   |
 | UKB-PPP         | GRCh37  | 04             |
 | Fenland         | GRCh37  | 04             |
+| UKB_female      | GRCh37  | 04             |
 | Kim (outcome)   | GRCh38  | — (reference)  |
 | 1000G EUR LD ref | GRCh37 | clump/proxy only |
 
@@ -176,6 +190,7 @@ scripts/
     fstat.py                # F-statistic computation
     fdr.py                  # Benjamini-Hochberg FDR
     checkpoint.py           # per-unit resumable state ledger (JSON)
+    config.py               # load/validate config/pipeline.json; typed cohort config access
     logging.py              # ISO-timestamped logger + run manifest
     progress.py             # tqdm wrapper with consistent formatting
     schema.py               # canonical column names; ProteinMeta dataclass
@@ -184,13 +199,14 @@ scripts/
     harmonise.R             # TwoSampleMR::harmonise_data wrapper
     mr_methods.R            # Wald / IVW-MRE / sensitivity analysis drivers
     coloc_abf.R             # coloc.abf wrapper
+    coloc_align.R           # allele-aware exposure/outcome alignment for coloc inputs (handles strand complements)
     logging.R               # futile.logger with ISO timestamps + file sink
     checkpoint.R            # RDS-based per-unit checkpointing
     progress.R              # progressr / pbmcapply wrappers
 
   00_setup/                 # install.sh, install_packages.R, install_sharepro.sh
   01_outcome_prep/          # prep_kim.py
-  02_cis_pqtl_extract/      # aric.py, decode.py, ukbppp.py, fenland.py
+  02_cis_pqtl_extract/      # aric.py, decode.py, ukbppp.py, fenland.py, protonexus_unpack.py, ukb_female.py
   03_clump/                 # clump.py
   04_liftover/              # instruments_to_hg38.py
   05_harmonise/             # harmonise.py
@@ -199,12 +215,14 @@ scripts/
   08_coloc/                 # extract_regions.py, sharepro.py, coloc_abf.R
   09_assemble/              # assemble.py, cross_cohort.py
   10_present/               # forest and volcano presentation plots
+  qc/
+    yield_report.py         # stage-aware protein/locus yield audit across all pipeline steps
 
 processed_data/
-  {ARIC_EA,deCODE,UKB_PPP,Fenland}/
+  {ARIC_EA,deCODE,UKB_PPP,Fenland,UKB_female}/
     raw_cis_sumstats/       # per-protein unfiltered ±1 Mb TSS-window TSV.GZ files (step 02)
     filtered_cis_pqtls/     # per-protein MR-ready filtered cis-pQTL TSVs (step 02)
-    cis_raw_1000kb/         # UKB_female ProteoNexus intermediate raw native files
+    cis_raw_1000kb/         # UKB_female only: raw cis TSVs from protonexus_unpack.py (step 02, phase 1)
     raw_cis_sumstats_hg38/  # lifted raw regional files for coloc (step 04)
     filtered_cis_pqtls_hg38/# lifted filtered cis-pQTL files (step 04)
     instruments/            # post-clumping independent instruments (step 03)
@@ -249,4 +267,4 @@ uv run pytest tests/ -v -m "not gwas_oracle_slow"
 uv run pytest tests/ -v -m gwas_oracle_slow
 ```
 
-85 tests cover all shared library modules (filters, FDR, F-stat, checkpointing, sumstats I/O, cis-window logic, ARIC file parsing, outcome tabix lookup, Synapse streaming, deCODE streaming, extraction pipeline). Tests requiring absent files (liftover chain, Synapse credentials) are automatically skipped.
+409 tests cover all shared library modules (filters, FDR, F-stat, checkpointing, config validation, sumstats I/O, cis-window logic, ARIC/UKB_female/deCODE/Fenland/UKB-PPP file parsing, outcome tabix lookup, Synapse streaming, deCODE streaming, liftover, harmonisation, MR methods, coloc alignment, yield report, extraction pipeline, and end-to-end smoke tests). Tests requiring absent files (liftover chain, Synapse credentials) are automatically skipped.
