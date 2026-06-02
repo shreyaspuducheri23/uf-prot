@@ -13,7 +13,7 @@ _REQUIRED: dict[str, set] = {
     "clump":       {"window_kb", "r2", "p1"},
     "fstat":       {"weak_threshold"},
     "harmonise":   {"maf_proxy_max", "proxy_r2_min"},
-    "outcome":     {"kim_N", "kim_cases", "kim_controls"},
+    "outcome":     {"kim_N", "kim_cases", "kim_controls", "prevalence"},
     "mhc":         {"hg19", "hg38"},
     "cohorts":     set(),
 }

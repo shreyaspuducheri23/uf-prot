@@ -38,3 +38,15 @@ pipeline_kim_s <- function() {
   controls <- as.numeric(outcome$kim_controls)
   cases / (cases + controls)
 }
+
+pipeline_kim_ncase <- function() {
+  as.numeric(pipeline_config()$outcome$kim_cases)
+}
+
+pipeline_kim_ncontrol <- function() {
+  as.numeric(pipeline_config()$outcome$kim_controls)
+}
+
+pipeline_prevalence <- function() {
+  as.numeric(pipeline_config()$outcome$prevalence)
+}

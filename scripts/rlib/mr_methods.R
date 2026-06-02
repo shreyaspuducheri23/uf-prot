@@ -78,7 +78,21 @@ run_sensitivity <- function(harm_dt) {
     out$direction_consistent <- length(unique(signs)) == 1
   }
 
-  # Steiger filtering
+  # Steiger filtering.
+  # directionality_test() uses r.exposure/r.outcome columns if present, otherwise
+  # approximates BOTH as quantitative via get_r_from_pn(). The outcome (Kim fibroid
+  # GWAS) is binary, so pre-compute r.outcome with get_r_from_lor() (log-OR → r using
+  # case/control counts + population prevalence from config/pipeline.json). The
+  # exposure (protein level) is quantitative — compute r.exposure with the same
+  # get_r_from_pn(pval, N) the test would have used, so only the outcome changes.
+  harm_dt$r.outcome  <- get_r_from_lor(
+    lor        = harm_dt$beta.outcome,
+    af         = harm_dt$eaf.outcome,
+    ncase      = pipeline_kim_ncase(),
+    ncontrol   = pipeline_kim_ncontrol(),
+    prevalence = pipeline_prevalence()
+  )
+  harm_dt$r.exposure <- get_r_from_pn(harm_dt$pval.exposure, harm_dt$samplesize.exposure)
   steiger <- tryCatch(directionality_test(harm_dt), error = function(e) NULL)
   if (!is.null(steiger)) {
     out$steiger_correct  <- steiger$correct_causal_direction
