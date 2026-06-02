@@ -24,12 +24,13 @@ source(file.path(repo_root, "scripts", "rlib", "logging.R"))
 source(file.path(repo_root, "scripts", "rlib", "checkpoint.R"))
 source(file.path(repo_root, "scripts", "rlib", "progress.R"))
 source(file.path(repo_root, "scripts", "rlib", "mr_methods.R"))
+source(file.path(repo_root, "scripts", "rlib", "config.R"))
 
 setup_logger("06_mr")
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 args     <- commandArgs(trailingOnly = TRUE)
-cohorts_all <- c("ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female")
+cohorts_all <- pipeline_cohorts()
 cohort_arg  <- "all"
 limit_arg   <- Inf
 
@@ -118,7 +119,7 @@ run_cohort_mr <- function(cohort) {
 all_results <- lapply(run_cohorts, run_cohort_mr)
 
 # ── Combined cross-cohort table ───────────────────────────────────────────────
-cohort_files <- file.path("processed_data", run_cohorts, "mr_results.tsv")
+cohort_files <- file.path("processed_data", cohorts_all, "mr_results.tsv")
 cohort_files <- cohort_files[file.exists(cohort_files)]
 if (length(cohort_files) > 0) {
   combined <- rbindlist(lapply(cohort_files, fread), fill = TRUE)

@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Parallel variant of run_pipeline.sh — runs cohorts concurrently at the bash level.
-# run_pipeline.sh is left unchanged as the safe sequential reference.
 #
 # Key differences:
 #   - Cohort extraction (step 2) runs all 5 cohorts simultaneously; each cohort
 #     hits a different data source so bandwidth pools don't compete.
-#   - Steps 3, 5, 8a, 8b split "--cohort all" into 5 per-cohort background jobs.
+#   - Steps 3, 4, 5, 6, 7, 8a, 8b, 8c split "--cohort all" into 5 per-cohort
+#     background jobs.
 #   - --workers (default 1) governs network-bound download threads per cohort.
 #     For local-file steps, --local-workers (default: nproc) is used instead.
 #   - Per-cohort checkpoint files (step_3_ARIC_EA.done etc.) let a failed cohort
 #     resume without re-running the others.
 #
-# Backward-compat note: old step_3.done / step_5.done / step_8a.done / step_8b.done
-# files from run_pipeline.sh are NOT recognized here.  To adopt this runner on an
-# existing partial run: delete the old single-cohort .done files and rely on the
-# Python-level per-protein checkpoints for resumption, OR manually create the
-# per-cohort variants (e.g. step_3_ARIC_EA.done) for cohorts already completed.
+# Backward-compat note: old global step_3.done / step_4.done / step_5.done /
+# step_6.done / step_7.done / step_8a.done / step_8b.done / step_8c.done files are NOT
+# recognized here.  To adopt this runner on an existing partial run: delete old
+# global .done files and rely on inner checkpoints for resumption, OR manually
+# create per-cohort variants (e.g. step_3_ARIC_EA.done) for completed cohorts.
 #
 # Usage:
 #   bash run_pipeline_parallel.sh [--workers N] [--local-workers N] [--force]
@@ -71,7 +71,13 @@ log() { local msg="[$(date +%Y-%m-%dT%H:%M:%S)] $*"; echo "$msg" | tee -a "$PIPE
 
 is_skipped() {
   local step="$1"
-  for s in "${SKIP_STEPS[@]+"${SKIP_STEPS[@]}"}"; do [[ "$s" == "$step" ]] && return 0; done
+  local base="$step"
+  case "$step" in
+    3_*|4_*|5_*|6_*|7_*|8a_*|8b_*|8c_*) base="${step%%_*}" ;;
+  esac
+  for s in "${SKIP_STEPS[@]+"${SKIP_STEPS[@]}"}"; do
+    [[ "$s" == "$step" || "$s" == "$base" ]] && return 0
+  done
   return 1
 }
 
@@ -91,6 +97,28 @@ run_step() {
     return 0
   fi
 
+  log "START step $step ($desc)"
+  local t0=$SECONDS
+  if "${cmd[@]}" 2>&1 | tee -a "$PIPELINE_LOG"; then
+    touch "$ckpt"
+    log "DONE  step $step ($desc) — $((SECONDS - t0))s"
+  else
+    log "FAIL  step $step ($desc) — exit $?"
+    exit 1
+  fi
+}
+
+run_step_always() {
+  local step="$1"; shift
+  local desc="$1"; shift
+  local cmd=("$@")
+
+  if is_skipped "$step"; then
+    log "SKIP  step $step ($desc) — explicitly skipped"
+    return 0
+  fi
+
+  local ckpt="$CKPT_DIR/step_${step}.done"
   log "START step $step ($desc)"
   local t0=$SECONDS
   if "${cmd[@]}" 2>&1 | tee -a "$PIPELINE_LOG"; then
@@ -254,13 +282,19 @@ done
 flush_parallel
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
-# ── Steps 6–7: MR + sensitivity (single-process) ─────────────────────────────
-run_step "6" "two-sample MR + BH-FDR" \
-  Rscript scripts/06_mr/run_mr.R
+# ── Steps 6–7: MR + sensitivity ──────────────────────────────────────────────
+for cohort in ARIC_EA deCODE UKB_PPP Fenland UKB_female; do
+  queue_step "6_${cohort}" "two-sample MR + BH-FDR: ${cohort}" \
+    Rscript scripts/06_mr/run_mr.R --cohort "$cohort"
+done
+flush_parallel
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
-run_step "7" "sensitivity analyses" \
-  Rscript scripts/07_sensitivity/run_sensitivity.R
+for cohort in ARIC_EA deCODE UKB_PPP Fenland UKB_female; do
+  queue_step "7_${cohort}" "sensitivity analyses: ${cohort}" \
+    Rscript scripts/07_sensitivity/run_sensitivity.R --cohort "$cohort"
+done
+flush_parallel
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 # ── Step 8: colocalization ────────────────────────────────────────────────────
@@ -278,16 +312,19 @@ done
 flush_parallel
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
-run_step "8c" "coloc: coloc.abf sensitivity (R)" \
-  Rscript scripts/08_coloc/coloc_abf.R
+for cohort in ARIC_EA deCODE UKB_PPP Fenland UKB_female; do
+  queue_step "8c_${cohort}" "coloc: coloc.abf sensitivity: ${cohort}" \
+    Rscript scripts/08_coloc/coloc_abf.R --cohort "$cohort"
+done
+flush_parallel
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
 # ── Steps 9–9b: assemble results ─────────────────────────────────────────────
-run_step "9" "assemble final results table" \
+run_step_always "9" "assemble final results table" \
   uv run python scripts/09_assemble/assemble.py
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 
-run_step "9b" "cross-cohort gene-level summary" \
+run_step_always "9b" "cross-cohort gene-level summary" \
   uv run python scripts/09_assemble/cross_cohort.py
 uv run python scripts/qc/yield_report.py --cohort all $STRICT_FLAG
 

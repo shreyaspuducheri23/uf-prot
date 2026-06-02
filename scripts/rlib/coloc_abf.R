@@ -3,7 +3,7 @@
 
 suppressPackageStartupMessages(library(coloc))
 
-run_coloc_abf <- function(exp_df, out_df, N_exp, N_out, type_exp = "quant") {
+run_coloc_abf <- function(exp_df, out_df, N_exp, N_out, s_out, type_exp = "quant") {
   # exp_df / out_df: data frames with columns: snp, beta, se, eaf (EAF), N (optional)
   # Returns coloc.abf result list
 
@@ -23,7 +23,7 @@ run_coloc_abf <- function(exp_df, out_df, N_exp, N_out, type_exp = "quant") {
     MAF     = pmin(out_df$eaf, 1 - out_df$eaf),
     type    = "cc",
     N       = N_out,
-    s       = 74318 / (74318 + 359834)  # Kim cases / (cases + controls)
+    s       = s_out
   )
 
   coloc.abf(d1, d2)

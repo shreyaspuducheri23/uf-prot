@@ -23,12 +23,13 @@ source(file.path(repo_root, "scripts", "rlib", "logging.R"))
 source(file.path(repo_root, "scripts", "rlib", "checkpoint.R"))
 source(file.path(repo_root, "scripts", "rlib", "progress.R"))
 source(file.path(repo_root, "scripts", "rlib", "mr_methods.R"))
+source(file.path(repo_root, "scripts", "rlib", "config.R"))
 
 setup_logger("07_sensitivity")
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 args        <- commandArgs(trailingOnly = TRUE)
-cohorts_all <- c("ARIC_EA", "deCODE", "UKB_PPP", "Fenland", "UKB_female")
+cohorts_all <- pipeline_cohorts()
 cohort_arg  <- "all"
 limit_arg   <- Inf
 
@@ -107,9 +108,11 @@ run_cohort_sensitivity <- function(cohort) {
 lapply(run_cohorts, run_cohort_sensitivity)
 
 # ── Combined cross-cohort sensitivity table + enrich mr_all_cohorts ──────────
-sens_files  <- file.path("processed_data", run_cohorts, "sensitivity.tsv")
+sens_cohorts <- cohorts_all
+sens_files  <- file.path("processed_data", sens_cohorts, "sensitivity.tsv")
 exists_mask <- file.exists(sens_files)
 sens_files  <- sens_files[exists_mask]
+sens_cohorts <- sens_cohorts[exists_mask]
 
 if (length(sens_files) > 0) {
   sens_all <- rbindlist(
@@ -117,7 +120,7 @@ if (length(sens_files) > 0) {
       dt <- fread(f, sep = "\t")
       dt[, cohort := cohort]
       dt
-    }, sens_files, run_cohorts[exists_mask], SIMPLIFY = FALSE),
+    }, sens_files, sens_cohorts, SIMPLIFY = FALSE),
     fill = TRUE
   )
   fwrite(sens_all, "processed_data/sensitivity_all_cohorts.tsv", sep = "\t")

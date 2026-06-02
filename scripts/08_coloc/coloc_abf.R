@@ -23,12 +23,13 @@ source(file.path(repo_root, "scripts", "rlib", "checkpoint.R"))
 source(file.path(repo_root, "scripts", "rlib", "progress.R"))
 source(file.path(repo_root, "scripts", "rlib", "coloc_align.R"))
 source(file.path(repo_root, "scripts", "rlib", "coloc_abf.R"))
+source(file.path(repo_root, "scripts", "rlib", "config.R"))
 
 setup_logger("08_coloc_abf")
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 args        <- commandArgs(trailingOnly = TRUE)
-cohorts_all <- c("ARIC_EA", "deCODE", "UKB_PPP", "Fenland")
+cohorts_all <- pipeline_cohorts()
 cohort_arg  <- "all"
 limit_arg   <- Inf
 
@@ -40,8 +41,8 @@ while (i <= length(args)) {
 }
 run_cohorts <- if (cohort_arg == "all") cohorts_all else cohort_arg
 
-KIM_N   <- 434152L
-KIM_S   <- 74318 / (74318 + 359834)   # case fraction
+KIM_N   <- pipeline_kim_n()
+KIM_S   <- pipeline_kim_s()
 
 run_cohort_coloc <- function(cohort) {
   region_base <- file.path("processed_data", "coloc", "regions", cohort)
@@ -106,7 +107,8 @@ run_cohort_coloc <- function(cohort) {
           eaf    = as.numeric(out_sub$effect_allele_frequency)
         ),
         N_exp = N_exp,
-        N_out = KIM_N
+        N_out = KIM_N,
+        s_out = KIM_S
       )
 
       pp <- coloc_res$summary

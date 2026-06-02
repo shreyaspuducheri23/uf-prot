@@ -19,7 +19,9 @@
     "proxy_r2_min": 0.8
   },
   "outcome": {
-    "kim_N": 434152
+    "kim_N": 434152,
+    "kim_cases": 74318,
+    "kim_controls": 359834
   },
   "mhc": {
     "hg19": [25000000, 34000000],
